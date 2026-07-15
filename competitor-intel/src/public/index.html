@@ -1,0 +1,38 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Crown Currency — Competitor Intel</title>
+    <link rel="stylesheet" href="/styles.css" />
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>👑</text></svg>" />
+  </head>
+  <body>
+    <header class="topbar">
+      <div class="brand">
+        <span class="crown">👑</span>
+        <div>
+          <div class="brand-title">Crown Currency</div>
+          <div class="brand-sub">Competitor Intelligence</div>
+        </div>
+      </div>
+      <nav class="tabs" id="tabs">
+        <button data-view="dashboard" class="active">Dashboard</button>
+        <button data-view="trends">Trends &amp; Insights</button>
+        <button data-view="intel">Intel Feed</button>
+        <button data-view="capture">Capture</button>
+        <button data-view="competitors">Competitors</button>
+      </nav>
+      <div class="topbar-right">
+        <button id="refreshBtn" class="icon-btn" title="Refresh data">⟳</button>
+        <button id="themeBtn" class="icon-btn" title="Toggle theme">◐</button>
+      </div>
+    </header>
+
+    <main id="app"><div class="loading">Loading…</div></main>
+
+    <div id="toast" class="toast"></div>
+
+    <script type="module" src="/app.js"></script>
+  </body>
+</html>

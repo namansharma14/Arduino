@@ -1,0 +1,297 @@
+// SQLite persistence layer (better-sqlite3, synchronous).
+import Database from 'better-sqlite3';
+import fs from 'node:fs';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
+
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
+const DATA_DIR = process.env.DATA_DIR || path.join(__dirname, '..', 'data');
+fs.mkdirSync(DATA_DIR, { recursive: true });
+
+export const DB_PATH = process.env.DB_PATH || path.join(DATA_DIR, 'intel.db');
+
+const db = new Database(DB_PATH);
+db.pragma('journal_mode = WAL');
+db.pragma('foreign_keys = ON');
+
+db.exec(`
+CREATE TABLE IF NOT EXISTS competitors (
+  id            INTEGER PRIMARY KEY AUTOINCREMENT,
+  name          TEXT NOT NULL UNIQUE,
+  website       TEXT,
+  location      TEXT NOT NULL,
+  is_self       INTEGER NOT NULL DEFAULT 0,   -- 1 = Crown Currency (our baseline)
+  active        INTEGER NOT NULL DEFAULT 1,
+  scrape_config TEXT,                          -- JSON string, null = manual only
+  notes         TEXT,
+  created_at    TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+CREATE TABLE IF NOT EXISTS intel_notes (
+  id            INTEGER PRIMARY KEY AUTOINCREMENT,
+  competitor_id INTEGER REFERENCES competitors(id) ON DELETE SET NULL,
+  raw_text      TEXT NOT NULL,
+  parsed        TEXT,                          -- JSON blob from the intel parser
+  currency      TEXT,                          -- primary currency detected (if any)
+  flags         TEXT,                          -- JSON array of flag strings
+  created_at    TEXT NOT NULL DEFAULT (datetime('now')),
+  created_by    TEXT
+);
+
+CREATE TABLE IF NOT EXISTS rates (
+  id            INTEGER PRIMARY KEY AUTOINCREMENT,
+  competitor_id INTEGER NOT NULL REFERENCES competitors(id) ON DELETE CASCADE,
+  currency      TEXT NOT NULL,                 -- ISO code, e.g. USD
+  sell_rate     REAL,                          -- foreign units per 1 AUD (customer buys)
+  buy_rate      REAL,                          -- foreign units per 1 AUD (customer sells back)
+  source        TEXT NOT NULL DEFAULT 'counter', -- online | counter | intel
+  captured_at   TEXT NOT NULL DEFAULT (datetime('now')),
+  captured_by   TEXT,
+  note          TEXT,
+  intel_id      INTEGER REFERENCES intel_notes(id) ON DELETE SET NULL
+);
+CREATE INDEX IF NOT EXISTS idx_rates_lookup ON rates(competitor_id, currency, captured_at);
+CREATE INDEX IF NOT EXISTS idx_rates_currency ON rates(currency, captured_at);
+
+CREATE TABLE IF NOT EXISTS scrape_runs (
+  id            INTEGER PRIMARY KEY AUTOINCREMENT,
+  competitor_id INTEGER REFERENCES competitors(id) ON DELETE CASCADE,
+  status        TEXT NOT NULL,                 -- ok | error | partial
+  rates_found   INTEGER DEFAULT 0,
+  message       TEXT,
+  started_at    TEXT NOT NULL DEFAULT (datetime('now')),
+  finished_at   TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_scrape_runs ON scrape_runs(competitor_id, started_at);
+`);
+
+export default db;
+
+// ---------------------------------------------------------------------------
+// Small typed helpers so routes/libs don't hand-write SQL everywhere.
+// ---------------------------------------------------------------------------
+
+const parseJSON = (s, fallback) => {
+  if (!s) return fallback;
+  try {
+    return JSON.parse(s);
+  } catch {
+    return fallback;
+  }
+};
+
+function hydrateCompetitor(row) {
+  if (!row) return row;
+  return {
+    ...row,
+    is_self: !!row.is_self,
+    active: !!row.active,
+    scrape_config: parseJSON(row.scrape_config, null),
+  };
+}
+
+export const competitors = {
+  all({ includeInactive = true } = {}) {
+    const rows = db
+      .prepare(
+        `SELECT * FROM competitors ${includeInactive ? '' : 'WHERE active = 1'} ORDER BY is_self DESC, name`
+      )
+      .all();
+    return rows.map(hydrateCompetitor);
+  },
+  get(id) {
+    return hydrateCompetitor(db.prepare('SELECT * FROM competitors WHERE id = ?').get(id));
+  },
+  getByName(name) {
+    return hydrateCompetitor(db.prepare('SELECT * FROM competitors WHERE name = ?').get(name));
+  },
+  create({ name, website = null, location, is_self = 0, scrape_config = null, notes = null }) {
+    const info = db
+      .prepare(
+        `INSERT INTO competitors (name, website, location, is_self, scrape_config, notes)
+         VALUES (@name, @website, @location, @is_self, @scrape_config, @notes)`
+      )
+      .run({
+        name,
+        website,
+        location,
+        is_self: is_self ? 1 : 0,
+        scrape_config: scrape_config ? JSON.stringify(scrape_config) : null,
+        notes,
+      });
+    return this.get(info.lastInsertRowid);
+  },
+  update(id, patch) {
+    const cur = db.prepare('SELECT * FROM competitors WHERE id = ?').get(id);
+    if (!cur) return null;
+    const next = {
+      name: patch.name ?? cur.name,
+      website: patch.website ?? cur.website,
+      location: patch.location ?? cur.location,
+      active: patch.active === undefined ? cur.active : patch.active ? 1 : 0,
+      notes: patch.notes ?? cur.notes,
+      scrape_config:
+        patch.scrape_config === undefined
+          ? cur.scrape_config
+          : patch.scrape_config
+            ? JSON.stringify(patch.scrape_config)
+            : null,
+    };
+    db.prepare(
+      `UPDATE competitors SET name=@name, website=@website, location=@location,
+         active=@active, notes=@notes, scrape_config=@scrape_config WHERE id=@id`
+    ).run({ ...next, id });
+    return this.get(id);
+  },
+  remove(id) {
+    return db.prepare('DELETE FROM competitors WHERE id = ?').run(id).changes > 0;
+  },
+};
+
+export const rates = {
+  insert({
+    competitor_id,
+    currency,
+    sell_rate = null,
+    buy_rate = null,
+    source = 'counter',
+    captured_at = null,
+    captured_by = null,
+    note = null,
+    intel_id = null,
+  }) {
+    const info = db
+      .prepare(
+        `INSERT INTO rates (competitor_id, currency, sell_rate, buy_rate, source, captured_at, captured_by, note, intel_id)
+         VALUES (@competitor_id, @currency, @sell_rate, @buy_rate, @source,
+                 COALESCE(@captured_at, datetime('now')), @captured_by, @note, @intel_id)`
+      )
+      .run({
+        competitor_id,
+        currency: currency.toUpperCase(),
+        sell_rate,
+        buy_rate,
+        source,
+        captured_at,
+        captured_by,
+        note,
+        intel_id,
+      });
+    return db.prepare('SELECT * FROM rates WHERE id = ?').get(info.lastInsertRowid);
+  },
+  // Time series for one competitor + currency, oldest first.
+  series(competitor_id, currency, { sinceDays = null } = {}) {
+    const clause = sinceDays ? `AND captured_at >= datetime('now', ?)` : '';
+    const params = [competitor_id, currency.toUpperCase()];
+    if (sinceDays) params.push(`-${sinceDays} days`);
+    return db
+      .prepare(
+        `SELECT * FROM rates
+         WHERE competitor_id = ? AND currency = ? ${clause}
+         ORDER BY captured_at ASC`
+      )
+      .all(...params);
+  },
+  // Latest rate per competitor for a currency (the "board" snapshot).
+  latestByCurrency(currency) {
+    return db
+      .prepare(
+        `SELECT r.* FROM rates r
+         JOIN (
+           SELECT competitor_id, MAX(captured_at) AS mx
+           FROM rates WHERE currency = ?
+           GROUP BY competitor_id
+         ) t ON t.competitor_id = r.competitor_id AND t.mx = r.captured_at
+         WHERE r.currency = ?`
+      )
+      .all(currency.toUpperCase(), currency.toUpperCase());
+  },
+  // Latest rate for a specific competitor+currency.
+  latest(competitor_id, currency) {
+    return db
+      .prepare(
+        `SELECT * FROM rates WHERE competitor_id = ? AND currency = ?
+         ORDER BY captured_at DESC LIMIT 1`
+      )
+      .get(competitor_id, currency.toUpperCase());
+  },
+  recent(limit = 50) {
+    return db
+      .prepare(
+        `SELECT r.*, c.name AS competitor_name FROM rates r
+         JOIN competitors c ON c.id = r.competitor_id
+         ORDER BY r.captured_at DESC LIMIT ?`
+      )
+      .all(limit);
+  },
+  currenciesTracked() {
+    return db
+      .prepare('SELECT DISTINCT currency FROM rates ORDER BY currency')
+      .all()
+      .map((r) => r.currency);
+  },
+};
+
+export const intel = {
+  insert({ competitor_id = null, raw_text, parsed = null, currency = null, flags = null, created_by = null }) {
+    const info = db
+      .prepare(
+        `INSERT INTO intel_notes (competitor_id, raw_text, parsed, currency, flags, created_by)
+         VALUES (@competitor_id, @raw_text, @parsed, @currency, @flags, @created_by)`
+      )
+      .run({
+        competitor_id,
+        raw_text,
+        parsed: parsed ? JSON.stringify(parsed) : null,
+        currency,
+        flags: flags ? JSON.stringify(flags) : null,
+        created_by,
+      });
+    return this.get(info.lastInsertRowid);
+  },
+  get(id) {
+    const row = db
+      .prepare(
+        `SELECT n.*, c.name AS competitor_name FROM intel_notes n
+         LEFT JOIN competitors c ON c.id = n.competitor_id WHERE n.id = ?`
+      )
+      .get(id);
+    if (!row) return row;
+    return { ...row, parsed: parseJSON(row.parsed, null), flags: parseJSON(row.flags, []) };
+  },
+  feed({ limit = 100, competitor_id = null } = {}) {
+    const clause = competitor_id ? 'WHERE n.competitor_id = ?' : '';
+    const params = competitor_id ? [competitor_id, limit] : [limit];
+    return db
+      .prepare(
+        `SELECT n.*, c.name AS competitor_name FROM intel_notes n
+         LEFT JOIN competitors c ON c.id = n.competitor_id
+         ${clause} ORDER BY n.created_at DESC LIMIT ?`
+      )
+      .all(...params)
+      .map((row) => ({ ...row, parsed: parseJSON(row.parsed, null), flags: parseJSON(row.flags, []) }));
+  },
+};
+
+export const scrapeRuns = {
+  start(competitor_id) {
+    const info = db
+      .prepare(`INSERT INTO scrape_runs (competitor_id, status) VALUES (?, 'running')`)
+      .run(competitor_id);
+    return info.lastInsertRowid;
+  },
+  finish(id, { status, rates_found = 0, message = null }) {
+    db.prepare(
+      `UPDATE scrape_runs SET status=?, rates_found=?, message=?, finished_at=datetime('now') WHERE id=?`
+    ).run(status, rates_found, message, id);
+  },
+  recent(limit = 50) {
+    return db
+      .prepare(
+        `SELECT s.*, c.name AS competitor_name FROM scrape_runs s
+         LEFT JOIN competitors c ON c.id = s.competitor_id
+         ORDER BY s.started_at DESC LIMIT ?`
+      )
+      .all(limit);
+  },
+};
