@@ -39,6 +39,22 @@ Requirements: Node.js 18+ (developed on Node 22).
 
 ---
 
+## Run in GitHub Codespaces (one-click)
+
+[![Open in GitHub Codespaces](https://github.com/codespaces/badge.svg)](https://codespaces.new/namansharma14/Arduino?ref=claude/competitor-intel-tool-yqwfok)
+
+Best way to test, iterate, and showcase internally without installing anything. Click the
+badge above (or **Code ▾ → Codespaces → Create codespace**). The included
+[`.devcontainer`](../.devcontainer/devcontainer.json) automatically runs `npm install`,
+seeds the demo data, starts the app, and forwards port **4000** — the dashboard opens on
+its own.
+
+**To share the live app with colleagues:** open the **PORTS** tab → right-click port
+**4000** → **Port Visibility → Public** (or **Organization**), then send them the
+`https://…-4000.app.github.dev` URL. Stop the Codespace when you're done to conserve hours.
+
+---
+
 ## How rates are modelled
 
 Everything uses one convention so numbers are always comparable:
