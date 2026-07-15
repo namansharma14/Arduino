@@ -2,8 +2,7 @@
   "name": "Crown Currency — Competitor Intel",
   "image": "mcr.microsoft.com/devcontainers/javascript-node:20",
   "postCreateCommand": "cd competitor-intel && npm install && npm run seed",
-  "postAttachCommand": "cd competitor-intel && (curl -sf http://localhost:4000/api/meta >/dev/null 2>&1 || npm start)",
-  "forwardPorts": [4000],
+  "postStartCommand": "cd competitor-intel && nohup npm start > /tmp/intel.log 2>&1 &",
   "portsAttributes": {
     "4000": {
       "label": "Competitor Intel Dashboard",
