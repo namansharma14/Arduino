@@ -15,25 +15,35 @@ db.pragma('journal_mode = WAL');
 db.pragma('foreign_keys = ON');
 
 db.exec(`
+CREATE TABLE IF NOT EXISTS stores (
+  id          INTEGER PRIMARY KEY AUTOINCREMENT,
+  name        TEXT NOT NULL UNIQUE,
+  location    TEXT,
+  is_default  INTEGER NOT NULL DEFAULT 0,
+  created_at  TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
 CREATE TABLE IF NOT EXISTS competitors (
   id            INTEGER PRIMARY KEY AUTOINCREMENT,
-  name          TEXT NOT NULL UNIQUE,
+  name          TEXT NOT NULL,
+  store_id      INTEGER REFERENCES stores(id) ON DELETE CASCADE,
   website       TEXT,
   location      TEXT NOT NULL,
-  is_self       INTEGER NOT NULL DEFAULT 0,   -- 1 = Crown Currency (our baseline)
+  is_self       INTEGER NOT NULL DEFAULT 0,   -- 1 = Crown Currency (our baseline for that store)
   active        INTEGER NOT NULL DEFAULT 1,
   scrape_config TEXT,                          -- JSON string, null = manual only
   notes         TEXT,
-  created_at    TEXT NOT NULL DEFAULT (datetime('now'))
+  created_at    TEXT NOT NULL DEFAULT (datetime('now')),
+  UNIQUE(name, store_id)
 );
 
 CREATE TABLE IF NOT EXISTS intel_notes (
   id            INTEGER PRIMARY KEY AUTOINCREMENT,
   competitor_id INTEGER REFERENCES competitors(id) ON DELETE SET NULL,
   raw_text      TEXT NOT NULL,
-  parsed        TEXT,                          -- JSON blob from the intel parser
-  currency      TEXT,                          -- primary currency detected (if any)
-  flags         TEXT,                          -- JSON array of flag strings
+  parsed        TEXT,
+  currency      TEXT,
+  flags         TEXT,
   created_at    TEXT NOT NULL DEFAULT (datetime('now')),
   created_by    TEXT
 );
@@ -42,8 +52,8 @@ CREATE TABLE IF NOT EXISTS rates (
   id            INTEGER PRIMARY KEY AUTOINCREMENT,
   competitor_id INTEGER NOT NULL REFERENCES competitors(id) ON DELETE CASCADE,
   currency      TEXT NOT NULL,                 -- ISO code, e.g. USD
-  sell_rate     REAL,                          -- foreign units per 1 AUD (customer buys)
-  buy_rate      REAL,                          -- foreign units per 1 AUD (customer sells back)
+  sell_rate     REAL,                          -- foreign units per 1 AUD (customer buys travel money)
+  buy_rate      REAL,                          -- foreign units per 1 AUD (customer sells foreign back)
   source        TEXT NOT NULL DEFAULT 'counter', -- online | counter | intel
   captured_at   TEXT NOT NULL DEFAULT (datetime('now')),
   captured_by   TEXT,
@@ -56,7 +66,7 @@ CREATE INDEX IF NOT EXISTS idx_rates_currency ON rates(currency, captured_at);
 CREATE TABLE IF NOT EXISTS scrape_runs (
   id            INTEGER PRIMARY KEY AUTOINCREMENT,
   competitor_id INTEGER REFERENCES competitors(id) ON DELETE CASCADE,
-  status        TEXT NOT NULL,                 -- ok | error | partial
+  status        TEXT NOT NULL,
   rates_found   INTEGER DEFAULT 0,
   message       TEXT,
   started_at    TEXT NOT NULL DEFAULT (datetime('now')),
@@ -65,12 +75,30 @@ CREATE TABLE IF NOT EXISTS scrape_runs (
 CREATE INDEX IF NOT EXISTS idx_scrape_runs ON scrape_runs(competitor_id, started_at);
 `);
 
+// --- lightweight migration: add store_id to competitors on pre-existing DBs ---
+const compCols = db.prepare(`PRAGMA table_info(competitors)`).all().map((c) => c.name);
+if (!compCols.includes('store_id')) {
+  db.exec(`ALTER TABLE competitors ADD COLUMN store_id INTEGER REFERENCES stores(id)`);
+}
+
+// Guarantee at least one store exists so competitors always have a home.
+export function ensureDefaultStore() {
+  let s = db.prepare('SELECT * FROM stores ORDER BY is_default DESC, id LIMIT 1').get();
+  if (!s) {
+    const info = db
+      .prepare(`INSERT INTO stores (name, location, is_default) VALUES ('Main', 'Head office', 1)`)
+      .run();
+    s = db.prepare('SELECT * FROM stores WHERE id = ?').get(info.lastInsertRowid);
+  }
+  // Attach any store-less competitors to the default store.
+  db.prepare('UPDATE competitors SET store_id = ? WHERE store_id IS NULL').run(s.id);
+  return s;
+}
+ensureDefaultStore();
+
 export default db;
 
 // ---------------------------------------------------------------------------
-// Small typed helpers so routes/libs don't hand-write SQL everywhere.
-// ---------------------------------------------------------------------------
-
 const parseJSON = (s, fallback) => {
   if (!s) return fallback;
   try {
@@ -90,29 +118,56 @@ function hydrateCompetitor(row) {
   };
 }
 
+export const stores = {
+  all() {
+    return db.prepare('SELECT * FROM stores ORDER BY is_default DESC, name').all();
+  },
+  get(id) {
+    return db.prepare('SELECT * FROM stores WHERE id = ?').get(id);
+  },
+  getByName(name) {
+    return db.prepare('SELECT * FROM stores WHERE name = ?').get(name);
+  },
+  create({ name, location = null, is_default = 0 }) {
+    const info = db
+      .prepare('INSERT INTO stores (name, location, is_default) VALUES (?, ?, ?)')
+      .run(name, location, is_default ? 1 : 0);
+    return this.get(info.lastInsertRowid);
+  },
+};
+
 export const competitors = {
-  all({ includeInactive = true } = {}) {
-    const rows = db
-      .prepare(
-        `SELECT * FROM competitors ${includeInactive ? '' : 'WHERE active = 1'} ORDER BY is_self DESC, name`
-      )
-      .all();
-    return rows.map(hydrateCompetitor);
+  all({ includeInactive = true, store_id = null } = {}) {
+    const where = [];
+    const params = [];
+    if (!includeInactive) where.push('active = 1');
+    if (store_id) {
+      where.push('store_id = ?');
+      params.push(store_id);
+    }
+    const clause = where.length ? `WHERE ${where.join(' AND ')}` : '';
+    return db
+      .prepare(`SELECT * FROM competitors ${clause} ORDER BY is_self DESC, name`)
+      .all(...params)
+      .map(hydrateCompetitor);
   },
   get(id) {
     return hydrateCompetitor(db.prepare('SELECT * FROM competitors WHERE id = ?').get(id));
   },
-  getByName(name) {
-    return hydrateCompetitor(db.prepare('SELECT * FROM competitors WHERE name = ?').get(name));
+  selfFor(store_id) {
+    return hydrateCompetitor(
+      db.prepare('SELECT * FROM competitors WHERE store_id = ? AND is_self = 1 LIMIT 1').get(store_id)
+    );
   },
-  create({ name, website = null, location, is_self = 0, scrape_config = null, notes = null }) {
+  create({ name, store_id, website = null, location, is_self = 0, scrape_config = null, notes = null }) {
     const info = db
       .prepare(
-        `INSERT INTO competitors (name, website, location, is_self, scrape_config, notes)
-         VALUES (@name, @website, @location, @is_self, @scrape_config, @notes)`
+        `INSERT INTO competitors (name, store_id, website, location, is_self, scrape_config, notes)
+         VALUES (@name, @store_id, @website, @location, @is_self, @scrape_config, @notes)`
       )
       .run({
         name,
+        store_id,
         website,
         location,
         is_self: is_self ? 1 : 0,
@@ -128,6 +183,7 @@ export const competitors = {
       name: patch.name ?? cur.name,
       website: patch.website ?? cur.website,
       location: patch.location ?? cur.location,
+      store_id: patch.store_id ?? cur.store_id,
       active: patch.active === undefined ? cur.active : patch.active ? 1 : 0,
       notes: patch.notes ?? cur.notes,
       scrape_config:
@@ -138,7 +194,7 @@ export const competitors = {
             : null,
     };
     db.prepare(
-      `UPDATE competitors SET name=@name, website=@website, location=@location,
+      `UPDATE competitors SET name=@name, website=@website, location=@location, store_id=@store_id,
          active=@active, notes=@notes, scrape_config=@scrape_config WHERE id=@id`
     ).run({ ...next, id });
     return this.get(id);
@@ -179,7 +235,6 @@ export const rates = {
       });
     return db.prepare('SELECT * FROM rates WHERE id = ?').get(info.lastInsertRowid);
   },
-  // Time series for one competitor + currency, oldest first.
   series(competitor_id, currency, { sinceDays = null } = {}) {
     const clause = sinceDays ? `AND captured_at >= datetime('now', ?)` : '';
     const params = [competitor_id, currency.toUpperCase()];
@@ -192,21 +247,21 @@ export const rates = {
       )
       .all(...params);
   },
-  // Latest rate per competitor for a currency (the "board" snapshot).
-  latestByCurrency(currency) {
+  // Latest rate per competitor for a currency, scoped to a store.
+  latestByCurrency(currency, store_id) {
     return db
       .prepare(
         `SELECT r.* FROM rates r
+         JOIN competitors c ON c.id = r.competitor_id
          JOIN (
            SELECT competitor_id, MAX(captured_at) AS mx
            FROM rates WHERE currency = ?
            GROUP BY competitor_id
          ) t ON t.competitor_id = r.competitor_id AND t.mx = r.captured_at
-         WHERE r.currency = ?`
+         WHERE r.currency = ? AND c.store_id = ? AND c.active = 1`
       )
-      .all(currency.toUpperCase(), currency.toUpperCase());
+      .all(currency.toUpperCase(), currency.toUpperCase(), store_id);
   },
-  // Latest rate for a specific competitor+currency.
   latest(competitor_id, currency) {
     return db
       .prepare(
@@ -215,19 +270,27 @@ export const rates = {
       )
       .get(competitor_id, currency.toUpperCase());
   },
-  recent(limit = 50) {
+  recent(limit = 50, store_id = null) {
+    const clause = store_id ? 'WHERE c.store_id = ?' : '';
+    const params = store_id ? [store_id, limit] : [limit];
     return db
       .prepare(
         `SELECT r.*, c.name AS competitor_name FROM rates r
          JOIN competitors c ON c.id = r.competitor_id
-         ORDER BY r.captured_at DESC LIMIT ?`
+         ${clause} ORDER BY r.captured_at DESC LIMIT ?`
       )
-      .all(limit);
+      .all(...params);
   },
-  currenciesTracked() {
+  currenciesTracked(store_id = null) {
+    const clause = store_id ? 'WHERE c.store_id = ?' : '';
+    const params = store_id ? [store_id] : [];
     return db
-      .prepare('SELECT DISTINCT currency FROM rates ORDER BY currency')
-      .all()
+      .prepare(
+        `SELECT DISTINCT r.currency FROM rates r
+         JOIN competitors c ON c.id = r.competitor_id ${clause}
+         ORDER BY r.currency`
+      )
+      .all(...params)
       .map((r) => r.currency);
   },
 };
@@ -252,19 +315,29 @@ export const intel = {
   get(id) {
     const row = db
       .prepare(
-        `SELECT n.*, c.name AS competitor_name FROM intel_notes n
+        `SELECT n.*, c.name AS competitor_name, c.store_id FROM intel_notes n
          LEFT JOIN competitors c ON c.id = n.competitor_id WHERE n.id = ?`
       )
       .get(id);
     if (!row) return row;
     return { ...row, parsed: parseJSON(row.parsed, null), flags: parseJSON(row.flags, []) };
   },
-  feed({ limit = 100, competitor_id = null } = {}) {
-    const clause = competitor_id ? 'WHERE n.competitor_id = ?' : '';
-    const params = competitor_id ? [competitor_id, limit] : [limit];
+  feed({ limit = 100, competitor_id = null, store_id = null } = {}) {
+    const where = [];
+    const params = [];
+    if (competitor_id) {
+      where.push('n.competitor_id = ?');
+      params.push(competitor_id);
+    }
+    if (store_id) {
+      where.push('c.store_id = ?');
+      params.push(store_id);
+    }
+    const clause = where.length ? `WHERE ${where.join(' AND ')}` : '';
+    params.push(limit);
     return db
       .prepare(
-        `SELECT n.*, c.name AS competitor_name FROM intel_notes n
+        `SELECT n.*, c.name AS competitor_name, c.store_id FROM intel_notes n
          LEFT JOIN competitors c ON c.id = n.competitor_id
          ${clause} ORDER BY n.created_at DESC LIMIT ?`
       )
@@ -285,13 +358,15 @@ export const scrapeRuns = {
       `UPDATE scrape_runs SET status=?, rates_found=?, message=?, finished_at=datetime('now') WHERE id=?`
     ).run(status, rates_found, message, id);
   },
-  recent(limit = 50) {
+  recent(limit = 50, store_id = null) {
+    const clause = store_id ? 'WHERE c.store_id = ?' : '';
+    const params = store_id ? [store_id, limit] : [limit];
     return db
       .prepare(
         `SELECT s.*, c.name AS competitor_name FROM scrape_runs s
          LEFT JOIN competitors c ON c.id = s.competitor_id
-         ORDER BY s.started_at DESC LIMIT ?`
+         ${clause} ORDER BY s.started_at DESC LIMIT ?`
       )
-      .all(limit);
+      .all(...params);
   },
 };

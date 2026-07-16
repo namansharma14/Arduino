@@ -1,6 +1,7 @@
 // REST API for the competitor intel tool.
 import express from 'express';
 import {
+  stores as storesRepo,
   competitors as competitorsRepo,
   rates as ratesRepo,
   intel as intelRepo,
@@ -9,7 +10,6 @@ import {
 import {
   CURRENCIES,
   CURRENCY_CODES,
-  CURRENCY_MAP,
   RATE_SOURCES,
   DEFAULTS,
   normaliseRate,
@@ -25,27 +25,52 @@ const ok = (res, data) => res.json({ ok: true, data });
 const fail = (res, code, msg) => res.status(code).json({ ok: false, error: msg });
 const asyncH = (fn) => (req, res) => Promise.resolve(fn(req, res)).catch((e) => fail(res, 500, String(e.message || e)));
 
+// Resolve a store id from the query (falls back to the default store).
+function resolveStoreId(req) {
+  if (req.query.store_id) return Number(req.query.store_id);
+  const all = storesRepo.all();
+  return all.length ? all[0].id : null;
+}
+const sideOf = (req) => (String(req.query.side || 'sell').toLowerCase() === 'buy' ? 'buy' : 'sell');
+
 // ---- meta -----------------------------------------------------------------
-router.get('/meta', (_req, res) =>
+router.get('/meta', (_req, res) => {
+  const list = storesRepo.all();
   ok(res, {
     currencies: CURRENCIES,
     sources: RATE_SOURCES,
+    stores: list,
+    defaultStoreId: list[0]?.id ?? null,
     scrapeCron: DEFAULTS.scrapeCron,
     autoScrape: DEFAULTS.autoScrape,
     baseCurrency: 'AUD',
-  })
-);
+  });
+});
+
+// ---- stores ---------------------------------------------------------------
+router.get('/stores', (_req, res) => ok(res, storesRepo.all()));
+router.post('/stores', (req, res) => {
+  const { name, location } = req.body || {};
+  if (!name || !String(name).trim()) return fail(res, 400, 'Store name is required');
+  if (storesRepo.getByName(String(name).trim())) return fail(res, 409, 'A store with that name already exists');
+  ok(res, storesRepo.create({ name: String(name).trim(), location: location ? String(location).trim() : null }));
+});
 
 // ---- competitors ----------------------------------------------------------
-router.get('/competitors', (_req, res) => ok(res, competitorsRepo.all()));
+router.get('/competitors', (req, res) => {
+  const store_id = req.query.store_id ? Number(req.query.store_id) : null;
+  ok(res, competitorsRepo.all({ store_id }));
+});
 
 router.post('/competitors', (req, res) => {
-  const { name, website, location, scrape_config, notes, is_self } = req.body || {};
+  const { name, website, location, scrape_config, notes, is_self, store_id } = req.body || {};
   if (!name || !String(name).trim()) return fail(res, 400, 'Competitor name is required');
   if (!location || !String(location).trim()) return fail(res, 400, 'Location is required');
-  if (competitorsRepo.getByName(String(name).trim())) return fail(res, 409, 'A competitor with that name already exists');
+  const sid = Number(store_id);
+  if (!sid || !storesRepo.get(sid)) return fail(res, 400, 'A valid store is required');
   const created = competitorsRepo.create({
     name: String(name).trim(),
+    store_id: sid,
     website: website ? String(website).trim() : null,
     location: String(location).trim(),
     is_self: is_self ? 1 : 0,
@@ -68,10 +93,16 @@ router.delete('/competitors/:id', (req, res) => {
 });
 
 // ---- consolidated board ---------------------------------------------------
-router.get('/board', (_req, res) => ok(res, buildBoard()));
+router.get('/board', (req, res) => {
+  const store_id = resolveStoreId(req);
+  if (!store_id) return ok(res, { currencies: [], competitors: [], board: [], side: sideOf(req) });
+  ok(res, buildBoard(store_id, sideOf(req)));
+});
 
 // ---- rates ----------------------------------------------------------------
-router.get('/rates/recent', (req, res) => ok(res, ratesRepo.recent(Number(req.query.limit) || 60)));
+router.get('/rates/recent', (req, res) =>
+  ok(res, ratesRepo.recent(Number(req.query.limit) || 60, req.query.store_id ? Number(req.query.store_id) : null))
+);
 
 router.post('/rates', (req, res) => {
   const b = req.body || {};
@@ -79,10 +110,10 @@ router.post('/rates', (req, res) => {
   if (!competitor) return fail(res, 400, 'Unknown competitor');
   const currency = String(b.currency || '').toUpperCase();
   if (!CURRENCY_CODES.includes(currency)) return fail(res, 400, `Unknown currency "${b.currency}"`);
-  if (b.sell_rate == null && b.buy_rate == null) return fail(res, 400, 'Provide at least a sell rate');
+  if (b.sell_rate == null && b.buy_rate == null) return fail(res, 400, 'Provide at least a sell or buy rate');
   const source = RATE_SOURCES.includes(b.source) ? b.source : 'counter';
-  const sell = b.sell_rate == null ? null : normaliseRate(currency, b.sell_rate).value;
-  const buy = b.buy_rate == null ? null : normaliseRate(currency, b.buy_rate).value;
+  const sell = b.sell_rate == null || b.sell_rate === '' ? null : normaliseRate(currency, b.sell_rate).value;
+  const buy = b.buy_rate == null || b.buy_rate === '' ? null : normaliseRate(currency, b.buy_rate).value;
   const row = ratesRepo.insert({
     competitor_id: competitor.id,
     currency,
@@ -104,19 +135,21 @@ router.get('/trends', (req, res) => {
   const competitor = competitorsRepo.get(competitorId);
   if (!competitor) return fail(res, 400, 'Unknown competitor');
   if (!CURRENCY_CODES.includes(currency)) return fail(res, 400, 'Unknown currency');
+  const store_id = competitor.store_id;
 
   const series = ratesRepo.series(competitorId, currency, { sinceDays: days });
-  const snapshot = ratesRepo.latestByCurrency(currency).map((r) => {
+  const snapshot = ratesRepo.latestByCurrency(currency, store_id).map((r) => {
     const c = competitorsRepo.get(r.competitor_id);
     return { ...r, competitor_name: c?.name, is_self: c?.is_self };
   });
-  const self = competitorsRepo.all().find((c) => c.is_self);
+  const self = competitorsRepo.selfFor(store_id);
   const selfLatest = self ? ratesRepo.latest(self.id, currency) : null;
   const selfRate = selfLatest ? selfLatest.sell_rate ?? selfLatest.buy_rate ?? null : null;
   const relatedIntel = intelRepo.feed({ competitor_id: competitorId, limit: 20 });
+  const latest = ratesRepo.latest(competitorId, currency);
 
   const insight = buildInsights({ competitor, currency, series, snapshot, intel: relatedIntel, selfRate });
-  const market = marketTrend(currency, allRatesForCurrency(currency, days));
+  const market = marketTrend(currency, allRatesForCurrency(currency, days, store_id));
 
   ok(res, {
     competitor,
@@ -124,6 +157,7 @@ router.get('/trends', (req, res) => {
     decimals: rateDecimals(currency),
     days,
     series: seriesPoints(series),
+    latest: latest ? { sell: latest.sell_rate, buy: latest.buy_rate } : null,
     self: self && selfRate != null ? { name: self.name, value: selfRate } : null,
     market,
     intel: relatedIntel,
@@ -134,20 +168,22 @@ router.get('/trends', (req, res) => {
 router.get('/trends/market', (req, res) => {
   const currency = String(req.query.currency || '').toUpperCase();
   const days = Number(req.query.days) || 30;
+  const store_id = resolveStoreId(req);
   if (!CURRENCY_CODES.includes(currency)) return fail(res, 400, 'Unknown currency');
-  ok(res, { currency, days, market: marketTrend(currency, allRatesForCurrency(currency, days)) });
+  ok(res, { currency, days, market: marketTrend(currency, allRatesForCurrency(currency, days, store_id)) });
 });
 
 // ---- intel ----------------------------------------------------------------
 router.get('/intel', (req, res) => {
   const competitor_id = req.query.competitor_id ? Number(req.query.competitor_id) : null;
-  const feed = intelRepo.feed({ competitor_id, limit: Number(req.query.limit) || 100 });
+  const store_id = req.query.store_id ? Number(req.query.store_id) : null;
+  const feed = intelRepo.feed({ competitor_id, store_id, limit: Number(req.query.limit) || 100 });
   ok(res, feed.map((n) => ({ ...n, flagLabels: (n.flags || []).map(flagLabel) })));
 });
 
-// Live preview — parse text without saving (used as staff type).
 router.post('/intel/preview', (req, res) => {
-  const comps = competitorsRepo.all().map((c) => ({ id: c.id, name: c.name }));
+  const store_id = req.body?.store_id ? Number(req.body.store_id) : null;
+  const comps = competitorsRepo.all({ store_id }).map((c) => ({ id: c.id, name: c.name }));
   const parsed = parseIntel(req.body?.raw_text || '', {
     competitors: comps,
     defaultCurrency: req.body?.currency || null,
@@ -159,7 +195,8 @@ router.post('/intel', (req, res) => {
   const b = req.body || {};
   const raw = String(b.raw_text || '').trim();
   if (!raw) return fail(res, 400, 'Intel text is required');
-  const comps = competitorsRepo.all();
+  const store_id = b.store_id ? Number(b.store_id) : null;
+  const comps = competitorsRepo.all({ store_id });
   const parsed = parseIntel(raw, {
     competitors: comps.map((c) => ({ id: c.id, name: c.name })),
     defaultCurrency: b.currency || null,
@@ -176,7 +213,6 @@ router.post('/intel', (req, res) => {
     created_by: b.created_by || null,
   });
 
-  // Optionally promote parsed rates into the rates table (source='intel').
   const promoted = [];
   if (b.captureRates !== false && competitorId) {
     for (const r of parsed.rates) {
@@ -209,6 +245,8 @@ router.post('/scrape', asyncH(async (req, res) => {
   ok(res, results);
 }));
 
-router.get('/scrape/runs', (req, res) => ok(res, scrapeRuns.recent(Number(req.query.limit) || 40)));
+router.get('/scrape/runs', (req, res) =>
+  ok(res, scrapeRuns.recent(Number(req.query.limit) || 40, req.query.store_id ? Number(req.query.store_id) : null))
+);
 
 export default router;

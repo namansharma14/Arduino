@@ -9,7 +9,7 @@
 //     competitorGuess:{name:'Travel Money Oz'}, flags:['stock_out','restock_eta'],
 //     eta:'Thursday', summary:'USD ~0.6400 · out of stock · restock Thursday' }
 
-import { CURRENCY_ALIASES, CURRENCY_CODES, normaliseRate, rateDecimals } from '../config.js';
+import { CURRENCY_ALIASES, CURRENCY_CODES, CURRENCY_MAP, normaliseRate, rateDecimals } from '../config.js';
 
 const DAYS = {
   mon: 'Monday', monday: 'Monday',
@@ -42,16 +42,22 @@ function detectCurrencies(text) {
   return [...found.entries()].sort((a, b) => a[1] - b[1]).map(([code, idx]) => ({ code, idx }));
 }
 
-// All numeric tokens with their positions. Skips numbers that are clearly a date/time.
+// All numeric tokens with their positions. Skips margins ("3.04%") and date
+// fragments ("20/07") so they aren't mistaken for rates.
 function extractNumbers(text) {
   const nums = [];
   const re = /(?<![\w.])(\d{1,6}(?:[.,]\d{1,6})?)(?![\w])/g;
   let m;
   while ((m = re.exec(text))) {
     const raw = m[1];
+    const start = m.index;
+    const before = text[start - 1] || '';
+    const after = text[start + raw.length] || '';
+    if (after === '%') continue; // a margin, not a rate
+    if (before === '/' || after === '/') continue; // part of a date
     const value = parseFloat(raw.replace(',', '.'));
     if (!isFinite(value)) continue;
-    nums.push({ raw, value, idx: m.index });
+    nums.push({ raw, value, idx: start });
   }
   return nums;
 }
@@ -61,18 +67,23 @@ function associateRates(text, currencies, numbers) {
   const rates = [];
   const used = new Set();
   for (const cur of currencies) {
+    const typical = CURRENCY_MAP[cur.code]?.typical ?? 1;
     let best = null;
     for (let i = 0; i < numbers.length; i++) {
       if (used.has(i)) continue;
       const num = numbers[i];
       const dist = Math.abs(num.idx - cur.idx);
+      if (dist > 60) continue;
       // Prefer numbers that appear AFTER the currency (typical "usd at 64").
       const after = num.idx > cur.idx;
       const window = between(text, cur.idx, num.idx);
-      const connector = /\b(at|@|=|for|doing|is|of|around|about|~|paying|buy|sell|rate)\b|[@=~]/i.test(window);
-      // Score: closer is better; a connector word or being after the currency helps.
-      const score = dist - (after ? 25 : 0) - (connector ? 40 : 0);
-      if (dist <= 60 && (!best || score < best.score)) best = { i, num, score };
+      const connector = /\b(at|@|=|for|doing|is|of|around|about|~|paying|buy|buying|sell|selling|rate)\b|[@=~]/i.test(window);
+      // How well the normalised value fits this currency's magnitude (log distance).
+      const norm = normaliseRate(cur.code, num.value);
+      const fit = norm.value ? Math.abs(Math.log10(norm.value) - Math.log10(typical)) : 5;
+      // Lower score = better: closer + connector + after help; poor magnitude fit hurts.
+      const score = dist - (after ? 25 : 0) - (connector ? 40 : 0) + fit * 35;
+      if (!best || score < best.score) best = { i, num, score };
     }
     if (best) {
       used.add(best.i);

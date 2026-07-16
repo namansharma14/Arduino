@@ -8,6 +8,10 @@ Built for frontline staff: capture what you hear at the counter, scrape competit
 websites for online rates, and get an auto-generated read on what a competitor is
 likely doing in-store.
 
+The board is **per-store** — each branch (Carindale, Sunnybank, Queen Street, …) has its
+own local competitors — and tracks both **sell** and **buy-back** rates (higher sell / lower
+buy = better for the customer; rank #1 = best either way).
+
 ---
 
 ## What it does

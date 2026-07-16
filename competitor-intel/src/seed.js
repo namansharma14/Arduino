@@ -1,24 +1,29 @@
-// Seed the database with competitors + realistic trend history + sample intel.
-//   node src/seed.js           # only seeds if DB has no competitors
-//   node src/seed.js --reset   # wipes rates/intel/competitors first
-import db, { competitors as competitorsRepo, rates as ratesRepo, intel as intelRepo } from './db.js';
+// Seed the database with real Crown stores + their local competitors (from the
+// planner sheets) + trend history (buy & sell) + sample intel.
+//   node src/seed.js           # only seeds if empty
+//   node src/seed.js --reset   # wipe + reseed
+import db, {
+  stores as storesRepo,
+  competitors as competitorsRepo,
+  rates as ratesRepo,
+  intel as intelRepo,
+  ensureDefaultStore,
+} from './db.js';
 import { CURRENCY_MAP } from './config.js';
 import { parseIntel } from './lib/intel-parser.js';
 
 const reset = process.argv.includes('--reset');
-
 if (reset) {
-  db.exec('DELETE FROM rates; DELETE FROM intel_notes; DELETE FROM scrape_runs; DELETE FROM competitors;');
-  db.exec("DELETE FROM sqlite_sequence WHERE name IN ('rates','intel_notes','scrape_runs','competitors');");
+  db.exec('DELETE FROM rates; DELETE FROM intel_notes; DELETE FROM scrape_runs; DELETE FROM competitors; DELETE FROM stores;');
+  db.exec("DELETE FROM sqlite_sequence WHERE name IN ('rates','intel_notes','scrape_runs','competitors','stores');");
   console.log('Cleared existing data.');
 }
 
-if (competitorsRepo.all().length > 0) {
-  console.log('Database already has competitors — skipping seed. Use --reset to wipe and reseed.');
+if (storesRepo.all().length > 0 && competitorsRepo.all().length > 0) {
+  console.log('Database already seeded — use --reset to wipe and reseed.');
   process.exit(0);
 }
 
-// Deterministic PRNG so re-seeding produces the same demo data.
 function mulberry32(a) {
   return function () {
     a |= 0;
@@ -28,158 +33,153 @@ function mulberry32(a) {
     return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
   };
 }
-const rnd = mulberry32(20260715);
+const rnd = mulberry32(20260716);
 
-const COMPETITORS = [
+// Real stores + their local competitors, taken from the daily planner sheets.
+const STORES = [
   {
-    name: 'Crown Currency',
-    website: 'https://crowncurrency.com.au',
-    location: 'Brisbane CBD, QLD',
-    is_self: 1,
-    bias: 0.0,
-    notes: 'Our own board (baseline for comparison).',
+    name: 'Carindale',
+    location: 'Westfield Carindale, Brisbane QLD',
+    competitors: [
+      { name: 'Travel Money Oz', location: 'Westfield Carindale (upstairs)', website: 'https://www.travelmoneyoz.com', bias: 0.004,
+        scrape_config: { strategy: 'auto', url: 'https://www.travelmoneyoz.com/foreign-exchange-rates', only: ['USD', 'EUR', 'GBP', 'NZD', 'JPY', 'THB'] } },
+      { name: 'Prosegur', location: 'Carindale, QLD', bias: 0.001 },
+      { name: 'Travelex', location: 'Westfield Carindale, QLD', website: 'https://www.travelex.com.au', bias: -0.006,
+        scrape_config: { strategy: 'auto', url: 'https://www.travelex.com.au/currency' } },
+      { name: 'Commbank Carindale', location: 'Westfield Carindale, QLD', bias: -0.009 },
+    ],
+    intel: [
+      { text: 'TMOZ upstairs offering to match their online rate instore, plus an additional $25 off', by: 'Andrea' },
+      { text: 'Travel Money Oz deliveries on Wednesday & Friday, needs head office approval for anything over $10K', by: 'Andrea' },
+      { text: 'Prosegur quoting EUR around 0.59, customer said their margin was 4.28%', by: 'Kym' },
+      { text: 'Travelex ran out of NZD 09/07/26', by: 'Andrea' },
+    ],
+    usdDip: 'Travel Money Oz',
   },
   {
-    name: 'Travel Money Oz',
-    website: 'https://www.travelmoneyoz.com',
-    location: 'Queen St Mall, Brisbane QLD',
-    bias: 0.004,
-    scrape_config: { strategy: 'auto', url: 'https://www.travelmoneyoz.com/foreign-exchange-rates', currencies: ['USD', 'EUR', 'GBP', 'NZD', 'JPY', 'THB'] },
-    notes: 'Aggressive on headline currencies, mall foot-traffic.',
+    name: 'Sunnybank',
+    location: 'Sunnybank Plaza, Brisbane QLD',
+    competitors: [
+      { name: 'Webtrade', location: 'Sunnybank Plaza', bias: 0.003 },
+      { name: 'Supay', location: 'Sunnybank Plaza', bias: 0.005 },
+      { name: 'Remox', location: 'Sunnybank Hills', bias: -0.002 },
+      { name: 'RedRate', location: 'Mt Gravatt', bias: -0.004 },
+    ],
+    intel: [
+      { text: 'Supay board rates and website rate are not the same — need to check the board instore', by: 'Amy' },
+      { text: 'Supay $5 fee for any exchange, wiped if you leave a 5-Star Google Review', by: 'Amy' },
+      { text: 'Webtrade EUR only have 50s, GBP smallest note is 20s, JPY no stock on Friday, new delivery Wed. Max $3000 AUD per person per day', by: 'Amy' },
+      { text: 'Remox opening two new branches, one in Wynnum and one in Capalaba. Only $3700 CAD in stock, delivery Wed or Thu', by: 'Amy' },
+    ],
+    usdDip: 'Supay',
   },
   {
-    name: 'Travelex',
-    website: 'https://www.travelex.com.au',
-    location: 'Brisbane Airport, QLD',
-    bias: -0.006,
-    scrape_config: { strategy: 'auto', url: 'https://www.travelex.com.au/currency', only: ['USD', 'EUR', 'GBP', 'NZD', 'JPY', 'THB'] },
-    notes: 'Airport locations, typically weaker rates + fees.',
-  },
-  {
-    name: 'S Money',
-    website: 'https://www.smoney.com.au',
-    location: 'Sydney CBD, NSW (online)',
-    bias: 0.0025,
-    notes: 'Online-led, sharp on USD/EUR.',
-  },
-  {
-    name: 'The Currency Shop',
-    website: 'https://www.thecurrencyshop.com.au',
-    location: 'Online / comparison',
-    bias: -0.003,
-    notes: 'Comparison site rates, mid-market.',
+    name: 'Queen Street',
+    location: 'Queen St Mall, Brisbane CBD QLD',
+    competitors: [
+      { name: 'Johnsons', location: 'Queen St, Brisbane', bias: 0.002 },
+      { name: 'Travel Money Oz', location: 'Queen St Mall, Brisbane', website: 'https://www.travelmoneyoz.com', bias: 0.004 },
+      { name: 'Travelex', location: 'Queen St Mall, Brisbane', website: 'https://www.travelex.com.au', bias: -0.005 },
+      { name: 'Value Currency', location: 'Queen St, Brisbane', bias: 0.0015 },
+    ],
+    intel: [
+      { text: 'Johnsons buying back JPY at 124.39', by: 'Ethel' },
+      { text: 'Travel Money Oz buying USD at 0.7368', by: 'Ethel' },
+      { text: 'Value Currency selling JPY 110.6 at 3.04% margin', by: 'Ethel' },
+      { text: 'Travelex only has CAD1400 in stock until 20/07', by: 'Ethel' },
+    ],
+    usdDip: 'Travelex',
   },
 ];
 
-const CURRENCIES = ['USD', 'EUR', 'GBP', 'NZD', 'JPY', 'THB'];
+const CURRENCIES = ['USD', 'EUR', 'GBP', 'JPY', 'NZD', 'THB'];
 const DAYS = 30;
 const NOW = Date.now();
 const DAY_MS = 86400000;
+const sqlTime = (ms) => new Date(ms).toISOString().slice(0, 19).replace('T', ' ');
 
-function sqlTime(ms) {
-  return new Date(ms).toISOString().slice(0, 19).replace('T', ' ');
-}
-
-// Create competitors.
-const created = {};
-for (const c of COMPETITORS) {
-  const row = competitorsRepo.create({
-    name: c.name,
-    website: c.website,
-    location: c.location,
-    is_self: c.is_self ? 1 : 0,
-    scrape_config: c.scrape_config || null,
-    notes: c.notes,
-  });
-  created[c.name] = { ...row, bias: c.bias };
-}
-console.log(`Created ${COMPETITORS.length} competitors.`);
-
-// Generate trend history. Each currency has a gentle market drift; each competitor
-// applies a persistent bias + noise. Travel Money Oz deliberately drifts its USD
-// down over the last week (to line up with the sample "clearing stock" intel).
+let storeCount = 0;
+let compCount = 0;
 let rateCount = 0;
-for (const currency of CURRENCIES) {
-  const base = CURRENCY_MAP[currency].typical;
-  // market drift path (one per day), a smooth-ish random walk
-  const drift = [];
-  let d = 0;
-  for (let day = 0; day <= DAYS; day++) {
-    d += (rnd() - 0.5) * 0.004; // ±0.2%/day
-    d = Math.max(-0.02, Math.min(0.02, d));
-    drift.push(d);
-  }
-
-  for (const c of COMPETITORS) {
-    const comp = created[c.name];
-    for (let day = DAYS; day >= 0; day--) {
-      const ts = NOW - day * DAY_MS - Math.floor(rnd() * 6) * 3600 * 1000;
-      let biasPct = comp.bias;
-
-      // TMO USD special: dive over the final 6 days.
-      if (c.name === 'Travel Money Oz' && currency === 'USD' && day <= 6) {
-        biasPct -= (6 - day) * 0.0016; // progressively worse -> ~0.6400
-      }
-      const noise = (rnd() - 0.5) * 0.003;
-      const value = base * (1 + drift[DAYS - day] + biasPct + noise);
-      const decimals = CURRENCY_MAP[currency].typical >= 10 ? 2 : 4;
-      const sell = Number(value.toFixed(decimals + 1));
-      const buy = Number((value * 0.985).toFixed(decimals + 1)); // buy-back a touch lower
-
-      ratesRepo.insert({
-        competitor_id: comp.id,
-        currency,
-        sell_rate: sell,
-        buy_rate: buy,
-        source: comp.is_self ? 'counter' : 'online',
-        captured_at: sqlTime(ts),
-        captured_by: comp.is_self ? 'front desk' : 'scraper',
-      });
-      rateCount++;
-    }
-  }
-}
-console.log(`Inserted ${rateCount} historical rates.`);
-
-// Sample intel notes (parsed through the real parser).
-const SAMPLE_INTEL = [
-  { text: "travel money oz is doing usd at 64 but don't have stock till coming Thur", by: 'Priya (counter)' },
-  { text: 'Travelex airport quoting EUR around 0.58, customer said fees on top', by: 'Jordan' },
-  { text: 'S Money online showing USD 0.6615, no commission this week', by: 'Priya (counter)' },
-  { text: 'Customer walked from Travel Money Oz — they were out of USD notes, sent them to us', by: 'Marcus' },
-  { text: 'Currency Shop GBP looked weak today, about 0.515', by: 'Jordan' },
-  { text: 'Travelex low on JPY, said new stock next week', by: 'Marcus' },
-];
-const compList = competitorsRepo.all().map((c) => ({ id: c.id, name: c.name }));
 let intelCount = 0;
-for (const s of SAMPLE_INTEL) {
-  const parsed = parseIntel(s.text, { competitors: compList });
-  const cid = parsed.competitorGuess?.id || null;
-  const note = intelRepo.insert({
-    competitor_id: cid,
-    raw_text: s.text,
-    parsed,
-    currency: parsed.primaryCurrency,
-    flags: parsed.flags,
-    created_by: s.by,
-  });
-  // promote parsed rates
-  if (cid) {
-    for (const r of parsed.rates) {
-      if (r.value == null) continue;
-      ratesRepo.insert({
-        competitor_id: cid,
-        currency: r.currency,
-        sell_rate: r.value,
-        source: 'intel',
-        captured_by: s.by,
-        note: `from intel: "${s.text.slice(0, 60)}"`,
-        intel_id: note.id,
-      });
+
+for (const S of STORES) {
+  const store = storesRepo.create({ name: S.name, location: S.location, is_default: storeCount === 0 ? 1 : 0 });
+  storeCount++;
+
+  // Crown's own board for this store (the baseline) + the local competitors.
+  const roster = [
+    { name: `Crown Currency – ${S.name}`, location: S.location, is_self: 1, bias: 0.0 },
+    ...S.competitors,
+  ];
+  const created = {};
+  for (const c of roster) {
+    const row = competitorsRepo.create({
+      name: c.name,
+      store_id: store.id,
+      website: c.website || null,
+      location: c.location,
+      is_self: c.is_self ? 1 : 0,
+      scrape_config: c.scrape_config || null,
+    });
+    created[c.name] = { ...row, bias: c.bias };
+    compCount++;
+  }
+
+  // Trend history: sell + buy (buy is HIGHER than sell in units-per-AUD — the
+  // customer gets fewer foreign units per AUD when selling back).
+  for (const currency of CURRENCIES) {
+    const base = CURRENCY_MAP[currency].typical;
+    const spread = base >= 10 ? 0.1 : 0.06; // wider buy/sell spread for JPY/THB
+    const drift = [];
+    let d = 0;
+    for (let day = 0; day <= DAYS; day++) {
+      d += (rnd() - 0.5) * 0.004;
+      d = Math.max(-0.02, Math.min(0.02, d));
+      drift.push(d);
+    }
+    for (const c of roster) {
+      const comp = created[c.name];
+      for (let day = DAYS; day >= 0; day--) {
+        const ts = NOW - day * DAY_MS - Math.floor(rnd() * 6) * 3600 * 1000;
+        let biasPct = comp.bias;
+        if (c.name === S.usdDip && currency === 'USD' && day <= 6) biasPct -= (6 - day) * 0.0016;
+        const noise = (rnd() - 0.5) * 0.003;
+        const value = base * (1 + drift[DAYS - day] + biasPct + noise);
+        const dec = base >= 10 ? 2 : 4;
+        const sell = Number(value.toFixed(dec + 1));
+        const buy = Number((value * (1 + spread)).toFixed(dec + 1)); // buy-back worse for customer
+        ratesRepo.insert({
+          competitor_id: comp.id,
+          currency,
+          sell_rate: sell,
+          buy_rate: buy,
+          source: comp.is_self ? 'counter' : 'online',
+          captured_at: sqlTime(ts),
+          captured_by: comp.is_self ? 'front desk' : 'scraper',
+        });
+        rateCount++;
+      }
     }
   }
-  intelCount++;
+
+  // Intel notes (parsed, not auto-promoted to keep trend data clean).
+  const compList = competitorsRepo.all({ store_id: store.id }).map((c) => ({ id: c.id, name: c.name }));
+  for (const s of S.intel) {
+    const parsed = parseIntel(s.text, { competitors: compList });
+    intelRepo.insert({
+      competitor_id: parsed.competitorGuess?.id || null,
+      raw_text: s.text,
+      parsed,
+      currency: parsed.primaryCurrency,
+      flags: parsed.flags,
+      created_by: s.by,
+    });
+    intelCount++;
+  }
 }
-console.log(`Inserted ${intelCount} intel notes.`);
-console.log('\nSeed complete. Start the app with:  npm start');
+
+ensureDefaultStore();
+console.log(`Seeded ${storeCount} stores, ${compCount} competitors, ${rateCount} rates, ${intelCount} intel notes.`);
+console.log('\nSeed complete. Start with:  npm start');
 process.exit(0);

@@ -20,9 +20,10 @@ function ts(row) {
   return new Date((row.captured_at || '').replace(' ', 'T') + 'Z').getTime();
 }
 
-// Value we trend on: sell_rate (units per AUD, customer-facing). Fall back to buy_rate.
-function val(row) {
-  return row.sell_rate ?? row.buy_rate ?? null;
+// Value for a given side. 'sell' = customer buys travel money (higher = better for
+// them); 'buy' = customer sells foreign back (lower units-per-AUD = better for them).
+function val(row, side = 'sell') {
+  return side === 'buy' ? (row.buy_rate ?? row.sell_rate ?? null) : (row.sell_rate ?? row.buy_rate ?? null);
 }
 
 function valueAtOrBefore(series, targetMs) {
@@ -92,12 +93,10 @@ export function summarizeSeries(currency, series) {
 }
 
 // Rank a board snapshot (rows for one currency, each a competitor's latest rate).
-// Best value for the customer = highest units-per-AUD. Rank 1 = best.
-export function rankSnapshot(currency, rows) {
-  const withVal = rows
-    .map((r) => ({ ...r, _v: val(r) }))
-    .filter((r) => r._v != null)
-    .sort((a, b) => b._v - a._v);
+// Rank 1 = best value for the customer: highest sell, or lowest buy.
+export function rankSnapshot(currency, rows, side = 'sell') {
+  const withVal = rows.map((r) => ({ ...r, _v: val(r, side) })).filter((r) => r._v != null);
+  withVal.sort((a, b) => (side === 'buy' ? a._v - b._v : b._v - a._v));
   return withVal.map((r, i) => ({ ...r, rank: i + 1, best: i === 0, worst: i === withVal.length - 1 }));
 }
 
@@ -194,11 +193,11 @@ export function buildInsights({ competitor, currency, series, snapshot, intel = 
 }
 
 // Market trend: average customer rate across all competitors per day bucket.
-export function marketTrend(currency, allRows) {
+export function marketTrend(currency, allRows, side = 'sell') {
   // allRows: every rate row for the currency across competitors (any order)
   const byDay = new Map(); // day -> {sum,count}
   for (const r of allRows) {
-    const v = val(r);
+    const v = val(r, side);
     if (v == null) continue;
     const day = (r.captured_at || '').slice(0, 10);
     const b = byDay.get(day) || { sum: 0, count: 0, min: Infinity, max: -Infinity };
