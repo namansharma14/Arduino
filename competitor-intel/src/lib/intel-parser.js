@@ -111,7 +111,7 @@ function detectFlags(text) {
   const flags = [];
   const stockOut =
     /\b(no|out of|don'?t have|dont have|haven'?t got|havent got|zero|nil|ran out|sold out|none left|no more)\b[^.]*\b(stock|left|available)\b/.test(t) ||
-    /\b(out of stock|no stock|sold out|stockout|no cash|no notes)\b/.test(t);
+    /\b(out of stock|no stock|sold out|stockout|no cash|no notes|ran out of|sold out of|none left of|no more of)\b/.test(t);
   if (stockOut) flags.push('stock_out');
 
   const lowStock = /\b(low|running low|limited|short on|nearly out|almost out|not much)\b[^.]*\b(stock|notes|cash|left)\b/.test(t);
@@ -121,7 +121,9 @@ function detectFlags(text) {
     /\b(till|until|til|by|next|coming|this|back(?:\s+in)?|restock|new stock|expecting|due)\b\s*(mon|tue|tues|wed|weds|thu|thur|thurs|fri|sat|sun|monday|tuesday|wednesday|thursday|friday|saturday|sunday|tomorrow|week|weekend)/.test(t);
   if (restock) flags.push('restock_eta');
 
-  const promo = /\b(no commission|commission free|fee free|no fee|no fees|zero commission|free delivery|price match|beat(?:ing)?|% off|percent off|special|deal|promo|discount|bonus)\b/.test(t);
+  const promo =
+    /\b(no commission|commission free|fee free|no fee|no fees|zero commission|free delivery|price ?match|match (?:our|their)|beat(?:ing)?|percent off|special|deal|promo|discount|bonus)\b/.test(t) ||
+    /\$\d+\s*off|\d+%\s*off/.test(t);
   if (promo) flags.push('promo');
 
   const moved = /\b(dropped|drop|cut|cutting|slashed|raised|raise|hiked|increased|lowered|lower|down|up|changed|moved|adjust)\b/.test(t);

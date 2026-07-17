@@ -36,42 +36,28 @@ function mulberry32(a) {
 const rnd = mulberry32(20260716);
 
 // Real stores + their local competitors, taken from the daily planner sheets.
+// Carindale carries live scrape configs (the demo store).
+const CARINDALE_ONLY = ['USD', 'EUR', 'GBP', 'NZD', 'JPY', 'THB'];
 const STORES = [
   {
     name: 'Carindale',
     location: 'Westfield Carindale, Brisbane QLD',
     competitors: [
       { name: 'Travel Money Oz', location: 'Westfield Carindale (upstairs)', website: 'https://www.travelmoneyoz.com', bias: 0.004,
-        scrape_config: { strategy: 'auto', url: 'https://www.travelmoneyoz.com/foreign-exchange-rates', only: ['USD', 'EUR', 'GBP', 'NZD', 'JPY', 'THB'] } },
-      { name: 'Prosegur', location: 'Carindale, QLD', bias: 0.001 },
+        scrape_config: { strategy: 'auto', url: 'https://www.travelmoneyoz.com/rates', only: CARINDALE_ONLY } },
       { name: 'Travelex', location: 'Westfield Carindale, QLD', website: 'https://www.travelex.com.au', bias: -0.006,
-        scrape_config: { strategy: 'auto', url: 'https://www.travelex.com.au/currency' } },
+        scrape_config: { strategy: 'auto', url: 'https://www.travelex.com.au/rates', only: CARINDALE_ONLY } },
+      { name: 'Prosegur', location: 'Carindale, QLD', website: 'https://au.prosegurchange.com', bias: 0.001,
+        scrape_config: { strategy: 'auto', url: 'https://au.prosegurchange.com/exchange-rates', only: CARINDALE_ONLY } },
       { name: 'Commbank Carindale', location: 'Westfield Carindale, QLD', bias: -0.009 },
     ],
     intel: [
-      { text: 'TMOZ upstairs offering to match their online rate instore, plus an additional $25 off', by: 'Andrea' },
-      { text: 'Travel Money Oz deliveries on Wednesday & Friday, needs head office approval for anything over $10K', by: 'Andrea' },
-      { text: 'Prosegur quoting EUR around 0.59, customer said their margin was 4.28%', by: 'Kym' },
-      { text: 'Travelex ran out of NZD 09/07/26', by: 'Andrea' },
+      { text: 'TMOZ upstairs offering to match their online rate instore, plus an additional $25 off', by: 'Front counter' },
+      { text: 'Travel Money Oz deliveries on Wednesday & Friday, needs head office approval for anything over $10K', by: 'Front counter' },
+      { text: 'Prosegur quoting EUR around 0.59, customer said their margin was 4.28%', by: 'Store lead' },
+      { text: 'Travelex ran out of NZD 09/07/26', by: 'Front counter' },
     ],
     usdDip: 'Travel Money Oz',
-  },
-  {
-    name: 'Sunnybank',
-    location: 'Sunnybank Plaza, Brisbane QLD',
-    competitors: [
-      { name: 'Webtrade', location: 'Sunnybank Plaza', bias: 0.003 },
-      { name: 'Supay', location: 'Sunnybank Plaza', bias: 0.005 },
-      { name: 'Remox', location: 'Sunnybank Hills', bias: -0.002 },
-      { name: 'RedRate', location: 'Mt Gravatt', bias: -0.004 },
-    ],
-    intel: [
-      { text: 'Supay board rates and website rate are not the same — need to check the board instore', by: 'Amy' },
-      { text: 'Supay $5 fee for any exchange, wiped if you leave a 5-Star Google Review', by: 'Amy' },
-      { text: 'Webtrade EUR only have 50s, GBP smallest note is 20s, JPY no stock on Friday, new delivery Wed. Max $3000 AUD per person per day', by: 'Amy' },
-      { text: 'Remox opening two new branches, one in Wynnum and one in Capalaba. Only $3700 CAD in stock, delivery Wed or Thu', by: 'Amy' },
-    ],
-    usdDip: 'Supay',
   },
   {
     name: 'Queen Street',
@@ -83,12 +69,57 @@ const STORES = [
       { name: 'Value Currency', location: 'Queen St, Brisbane', bias: 0.0015 },
     ],
     intel: [
-      { text: 'Johnsons buying back JPY at 124.39', by: 'Ethel' },
-      { text: 'Travel Money Oz buying USD at 0.7368', by: 'Ethel' },
-      { text: 'Value Currency selling JPY 110.6 at 3.04% margin', by: 'Ethel' },
-      { text: 'Travelex only has CAD1400 in stock until 20/07', by: 'Ethel' },
+      { text: 'Johnsons buying back JPY at 124.39', by: 'Front counter' },
+      { text: 'Travel Money Oz buying USD at 0.7368', by: 'Front counter' },
+      { text: 'Value Currency selling JPY 110.6 at 3.04% margin', by: 'Front counter' },
+      { text: 'Travelex only has CAD1400 in stock until 20/07', by: 'Front counter' },
     ],
     usdDip: 'Travelex',
+  },
+  {
+    name: 'Aspley',
+    location: 'Aspley, Brisbane QLD',
+    competitors: [
+      { name: 'Travel Money Oz', location: 'Westfield Chermside (nearby)', website: 'https://www.travelmoneyoz.com', bias: 0.0035 },
+      { name: 'Travelex', location: 'Westfield Chermside (nearby)', website: 'https://www.travelex.com.au', bias: -0.006 },
+      { name: 'Australia Post', location: 'Aspley Hypermarket', bias: -0.008 },
+    ],
+    intel: [
+      { text: 'Travel Money Oz at Chermside out of USD small notes, restock Thursday', by: 'Store lead' },
+      { text: 'Australia Post only sells load-and-go travel card, no cash EUR', by: 'Store lead' },
+    ],
+    usdDip: 'Travelex',
+  },
+  {
+    name: 'Sunnybank',
+    location: 'Sunnybank Plaza, Brisbane QLD',
+    competitors: [
+      { name: 'Webtrade', location: 'Sunnybank Plaza', bias: 0.003 },
+      { name: 'Supay', location: 'Sunnybank Plaza', bias: 0.005 },
+      { name: 'Remox', location: 'Sunnybank Hills', bias: -0.002 },
+      { name: 'RedRate', location: 'Mt Gravatt', bias: -0.004 },
+    ],
+    intel: [
+      { text: 'Supay board rates and website rate are not the same — need to check the board instore', by: 'Front counter' },
+      { text: 'Supay $5 fee for any exchange, wiped if you leave a 5-Star Google Review', by: 'Front counter' },
+      { text: 'Webtrade EUR only have 50s, GBP smallest note is 20s, JPY no stock on Friday, new delivery Wed. Max $3000 AUD per person per day', by: 'Front counter' },
+      { text: 'Remox opening two new branches, one in Wynnum and one in Capalaba. Only $3700 CAD in stock, delivery Wed or Thu', by: 'Front counter' },
+    ],
+    usdDip: 'Supay',
+  },
+  {
+    name: 'Indooroopilly',
+    location: 'Indooroopilly Shopping Centre, Brisbane QLD',
+    competitors: [
+      { name: 'Travelex', location: 'Indooroopilly Shopping Centre', website: 'https://www.travelex.com.au', bias: -0.005 },
+      { name: 'Travel Money Oz', location: 'Indooroopilly Shopping Centre', website: 'https://www.travelmoneyoz.com', bias: 0.004 },
+      { name: 'The Currency Exchange', location: 'Indooroopilly', bias: 0.001 },
+    ],
+    intel: [
+      { text: 'Travelex Indooroopilly running low on GBP, only 50s left', by: 'Front counter' },
+      { text: 'Travel Money Oz price-matching our USD board this week', by: 'Front counter' },
+    ],
+    usdDip: 'Travel Money Oz',
   },
 ];
 

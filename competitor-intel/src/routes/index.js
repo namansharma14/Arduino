@@ -149,7 +149,9 @@ router.get('/trends', (req, res) => {
   const latest = ratesRepo.latest(competitorId, currency);
 
   const insight = buildInsights({ competitor, currency, series, snapshot, intel: relatedIntel, selfRate });
-  const market = marketTrend(currency, allRatesForCurrency(currency, days, store_id));
+  const marketRows = allRatesForCurrency(currency, days, store_id);
+  const market = marketTrend(currency, marketRows);
+  const marketBuy = marketTrend(currency, marketRows, 'buy');
 
   ok(res, {
     competitor,
@@ -160,6 +162,7 @@ router.get('/trends', (req, res) => {
     latest: latest ? { sell: latest.sell_rate, buy: latest.buy_rate } : null,
     self: self && selfRate != null ? { name: self.name, value: selfRate } : null,
     market,
+    marketBuy,
     intel: relatedIntel,
     ...insight,
   });

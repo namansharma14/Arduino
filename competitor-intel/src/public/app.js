@@ -61,7 +61,7 @@ const state = {
   competitors: [],
   view: 'dashboard',
   side: 'sell',
-  trends: { competitorId: null, currency: null, days: 30 },
+  trends: { competitorId: null, currency: null, days: 30, side: 'sell' },
 };
 
 async function loadCore() {
@@ -141,15 +141,18 @@ views.dashboard = async function () {
         <button class="btn secondary small" id="scrapeAllBtn">⟳ Scrape all sites</button>
       </div>
     </div>
-    <div class="board-caption">
-      ${state.side === 'sell'
-        ? '<b>Sell</b> = customer buys travel money — <b>higher</b> units/AUD is better for them (rank #1 = best).'
-        : '<b>Buy-back</b> = customer sells foreign back — <b>lower</b> units/AUD is better for them (rank #1 = best).'}
+    <div class="kpis">
+      ${kpis.map((k) => `<div class="card kpi"><div class="k-val">${k.val}</div><div class="k-label">${esc(k.label)}</div>${k.sub ? `<div class="k-sub ${k.cls === 'warn' ? 'delta-down' : 'muted'}">${esc(k.sub)}</div>` : ''}</div>`).join('')}
     </div>
     ${recentAlerts.length ? `<div class="card" style="padding:14px 16px;margin-bottom:20px">
         <h3 style="font-size:14px;margin-bottom:10px">⚡ Intel alerts</h3>
         <div class="row">${recentAlerts.map(alertChip).join('')}</div>
       </div>` : ''}
+    <div class="board-caption">
+      ${state.side === 'sell'
+        ? '<b>Sell</b> = customer buys travel money — <b>higher</b> units/AUD is better for them (rank #1 = best).'
+        : '<b>Buy-back</b> = customer sells foreign back — <b>lower</b> units/AUD is better for them (rank #1 = best).'}
+    </div>
     <div class="board-grid" id="boardGrid">
       ${cards.map(boardCard).join('') || '<div class="empty-state">No rates yet for this store. Add a competitor and log a rate, or run a scrape.</div>'}
     </div>
@@ -234,6 +237,7 @@ views.trends = async function () {
     <div class="controls">
       <label class="field">Competitor<select id="tCompetitor">${competitorOptions(t.competitorId)}</select></label>
       <label class="field">Currency<select id="tCurrency">${currencyOptions(t.currency)}</select></label>
+      <label class="field">View<div class="seg" id="tSide"><button data-side="sell" class="${t.side !== 'buy' ? 'active' : ''}">Sell</button><button data-side="buy" class="${t.side === 'buy' ? 'active' : ''}">Buy-back</button></div></label>
       <label class="field">Timeframe<div class="seg" id="tRange">${[7, 30, 90].map((d) => `<button data-d="${d}" class="${t.days === d ? 'active' : ''}">${d}d</button>`).join('')}</div></label>
     </div>
     <div id="trendBody"><div class="loading">Loading…</div></div>
@@ -244,6 +248,13 @@ views.trends = async function () {
   });
   $('#tCurrency').addEventListener('change', (e) => {
     t.currency = e.target.value;
+    renderTrendBody();
+  });
+  $('#tSide').addEventListener('click', (e) => {
+    const b = e.target.closest('button');
+    if (!b) return;
+    t.side = b.dataset.side;
+    document.querySelectorAll('#tSide button').forEach((x) => x.classList.toggle('active', x === b));
     renderTrendBody();
   });
   $('#tRange').addEventListener('click', (e) => {
@@ -277,16 +288,17 @@ async function renderTrendBody() {
     </div>
   `;
 
+  const side = state.trends.side === 'buy' ? 'buy' : 'sell';
+  const sideName = side === 'buy' ? 'buy-back' : 'sell';
   const series = [];
-  const sell = data.series.filter((p) => p.sell != null).map((p) => ({ t: p.t, v: p.sell }));
-  const buy = data.series.filter((p) => p.buy != null).map((p) => ({ t: p.t, v: p.buy }));
-  series.push({ name: `${data.competitor.name} — sell`, color: cssVar('--accent'), points: sell, width: 2.5, fill: true });
-  if (buy.length) series.push({ name: `${data.competitor.name} — buy-back`, color: cssVar('--warn'), points: buy, width: 2 });
+  const compPts = data.series.filter((p) => p[side] != null).map((p) => ({ t: p.t, v: p[side] }));
+  series.push({ name: `${data.competitor.name} — ${sideName}`, color: cssVar('--accent'), points: compPts, width: 2.5, fill: true });
   if (selfData) {
-    const sp = selfData.series.filter((p) => p.sell != null).map((p) => ({ t: p.t, v: p.sell }));
-    if (sp.length) series.push({ name: 'Crown sell', color: cssVar('--brand'), points: sp, dashed: true });
+    const sp = selfData.series.filter((p) => p[side] != null).map((p) => ({ t: p.t, v: p[side] }));
+    if (sp.length) series.push({ name: `Crown ${sideName}`, color: cssVar('--brand'), points: sp, dashed: true });
   }
-  if (data.market?.length) series.push({ name: 'Market avg sell', color: '#8a94a6', points: data.market.map((m) => ({ t: `${m.day}T12:00:00Z`, v: m.avg })), dashed: true, width: 1.5 });
+  const mkt = side === 'buy' ? data.marketBuy : data.market;
+  if (mkt?.length) series.push({ name: `Market avg ${sideName}`, color: '#8a94a6', points: mkt.map((m) => ({ t: `${m.day}T12:00:00Z`, v: m.avg })), dashed: true, width: 1.5 });
   lineChart($('#trendChart'), { series, decimals: data.decimals, height: 340 });
 }
 
@@ -364,7 +376,7 @@ views.capture = async function () {
           <div class="preview-box" id="iPreview"><span class="muted">Detected signals will appear here as you type…</span></div>
           <div class="form-grid" style="margin-top:12px">
             <label class="field">Competitor<select id="iComp">${competitorOptions(null, { includeAuto: true })}</select></label>
-            <label class="field">Your name<input id="iBy" placeholder="e.g. Priya" /></label>
+            <label class="field">Your name<input id="iBy" placeholder="e.g. your initials" /></label>
           </div>
           <label class="field" style="flex-direction:row;align-items:center;gap:8px;margin-top:10px">
             <input type="checkbox" id="iCapture" checked style="width:auto" /> Also record the detected rate on the board
@@ -381,7 +393,7 @@ views.capture = async function () {
             <label class="field">Sell rate (units/AUD)<input id="rSell" inputmode="decimal" placeholder="customer buys — e.g. 0.6450" /></label>
             <label class="field">Buy-back rate (units/AUD)<input id="rBuy" inputmode="decimal" placeholder="customer sells back — e.g. 0.6850" /></label>
             <label class="field">Source<select id="rSrc"><option value="counter">Heard at counter</option><option value="online">Seen online</option><option value="intel">Customer intel</option></select></label>
-            <label class="field">Your name<input id="rBy" placeholder="e.g. Marcus" /></label>
+            <label class="field">Your name<input id="rBy" placeholder="e.g. your initials" /></label>
           </div>
           <label class="field" style="margin-top:12px">Note<input id="rNote" placeholder="optional context" /></label>
           <div class="help">Enter at least one of sell / buy. Type it as customers say it ("64") and we'll normalise it to 0.6400 for that currency.</div>
