@@ -12,7 +12,14 @@ const app = express();
 
 app.use(express.json({ limit: '256kb' }));
 app.use('/api', api);
-app.use(express.static(path.join(__dirname, 'public')));
+app.use(
+  express.static(path.join(__dirname, 'public'), {
+    // Force revalidation so staff never run a stale app.js after an update.
+    setHeaders(res, filePath) {
+      if (/\.(html|js|css)$/.test(filePath)) res.setHeader('Cache-Control', 'no-cache');
+    },
+  })
+);
 
 // SPA fallback (any non-API GET returns the app shell).
 app.get(/^\/(?!api\/).*/, (_req, res) => res.sendFile(path.join(__dirname, 'public', 'index.html')));

@@ -1,7 +1,7 @@
 {
   "name": "Crown Currency — Competitor Intel",
   "image": "mcr.microsoft.com/devcontainers/javascript-node:20",
-  "postCreateCommand": "cd competitor-intel && npm install && npm run seed",
+  "postCreateCommand": "cd competitor-intel && npm install && npm run seed && (npx --yes playwright install --with-deps chromium || npx --yes playwright install chromium || echo 'Chromium install skipped — run npx playwright install chromium manually to enable rendered scraping')",
   "forwardPorts": [4000],
   "portsAttributes": {
     "4000": { "label": "Competitor Intel Dashboard", "onAutoForward": "openPreview" }

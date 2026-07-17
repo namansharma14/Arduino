@@ -131,10 +131,29 @@ Competitors are manual-only until you give them a scrape config. Three strategie
   "items": "data.rates", "map": { "code": "currencyCode", "sell": "sellRate" } }
 ```
 
+**JS-rendered sites (most big FX sites):** add `"render": true` to the config and the
+engine loads the page in **headless Chromium** first, so JavaScript-injected rates are
+visible. One-time setup per machine: `npx --yes playwright install chromium` (the
+devcontainer does this automatically). Without a browser installed, render configs fall
+back to static HTML with a note in the run log.
+
+**Verifying/tuning a site** (never writes to the DB):
+
+```bash
+npm run scrape:verify -- "https://competitor.com/rates" --currencies USD,EUR,GBP
+npm run scrape:verify -- --competitor "Travel Money Oz"   # dry-run a saved config
+```
+
+It compares static vs rendered extraction, **sniffs the site's network traffic for hidden
+JSON rate APIs** (the most reliable thing to scrape), sanity-checks magnitudes, and prints
+a ready-to-paste `scrape_config`. There's also a repo skill (`.claude/skills/scrape-verify`)
+that walks Claude through the full tune-and-verify procedure.
+
 Run scrapes from the UI (**Scrape all now** / per-competitor **Scrape**), the CLI
 (`npm run scrape` or `npm run scrape -- "Travel Money Oz"`), or let the scheduler run
-hourly. Every run is logged (ok / partial / error) in the Competitors view. Scraping is
-best-effort — if a site changes or blocks bots, the manual/intel paths still work.
+hourly. Every run is logged (ok / partial / error, static vs rendered) in the Competitors
+view. Scraping is best-effort — if a site changes or blocks bots, the manual/intel paths
+still work.
 
 ---
 

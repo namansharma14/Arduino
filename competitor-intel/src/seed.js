@@ -44,11 +44,11 @@ const STORES = [
     location: 'Westfield Carindale, Brisbane QLD',
     competitors: [
       { name: 'Travel Money Oz', location: 'Westfield Carindale (upstairs)', website: 'https://www.travelmoneyoz.com', bias: 0.004,
-        scrape_config: { strategy: 'auto', url: 'https://www.travelmoneyoz.com/rates', only: CARINDALE_ONLY } },
+        scrape_config: { strategy: 'auto', render: true, url: 'https://www.travelmoneyoz.com/rates', only: CARINDALE_ONLY } },
       { name: 'Travelex', location: 'Westfield Carindale, QLD', website: 'https://www.travelex.com.au', bias: -0.006,
-        scrape_config: { strategy: 'auto', url: 'https://www.travelex.com.au/rates', only: CARINDALE_ONLY } },
+        scrape_config: { strategy: 'auto', render: true, url: 'https://www.travelex.com.au/rates', only: CARINDALE_ONLY } },
       { name: 'Prosegur', location: 'Carindale, QLD', website: 'https://au.prosegurchange.com', bias: 0.001,
-        scrape_config: { strategy: 'auto', url: 'https://au.prosegurchange.com/exchange-rates', only: CARINDALE_ONLY } },
+        scrape_config: { strategy: 'auto', render: true, url: 'https://au.prosegurchange.com/exchange-rates', only: CARINDALE_ONLY } },
       { name: 'Commbank Carindale', location: 'Westfield Carindale, QLD', bias: -0.009 },
     ],
     intel: [

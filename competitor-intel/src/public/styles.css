@@ -193,6 +193,7 @@ input:focus, select:focus, textarea:focus { outline: 2px solid color-mix(in srgb
 
 /* ---- charts ---- */
 .chart-box { padding: 16px; }
+.chart-title { font-size: 14.5px; margin: 2px 4px 12px; font-weight: 650; }
 .linechart .grid { stroke: var(--border); stroke-width: 1; }
 .linechart .axis-label { fill: var(--muted); font-size: 11px; font-family: var(--sans); }
 .linechart .hover-line { stroke: var(--muted); stroke-width: 1; stroke-dasharray: 3 3; }

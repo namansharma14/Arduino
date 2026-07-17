@@ -119,6 +119,7 @@ export function runStrategy(payload, config) {
       return selectorStrategy(payload, config);
     case 'json':
       return jsonStrategy(payload, config);
+    case 'browser': // rendered in headless Chromium by the engine, then scanned like 'auto'
     case 'auto':
     default:
       return autoStrategy(payload, config);

@@ -26,6 +26,8 @@ async function fetchPayload(url, config) {
 }
 
 // Scrape one competitor. Returns { status, rates_found, message, rates }.
+// If config.render is true (or strategy is 'browser'), the page is rendered in
+// headless Chromium first so JS-injected rates are visible to the extractor.
 export async function scrapeCompetitor(competitor, { persist = true } = {}) {
   const config = competitor.scrape_config;
   if (!config || !config.url) {
@@ -33,7 +35,27 @@ export async function scrapeCompetitor(competitor, { persist = true } = {}) {
   }
   const runId = persist ? scrapeRuns.start(competitor.id) : null;
   try {
-    const payload = await fetchPayload(config.url, config);
+    const wantsRender = !!config.render || (config.strategy || '').toLowerCase() === 'browser';
+    let payload;
+    let mode = 'static';
+    if (wantsRender) {
+      try {
+        const { renderPage } = await import('./browser.js');
+        const rendered = await renderPage(config.url, {
+          timeoutMs: DEFAULTS.scrapeTimeoutMs + 15000,
+          waitSelector: config.waitSelector || null,
+          userAgent: DEFAULTS.userAgent,
+        });
+        payload = rendered.html;
+        mode = 'rendered';
+      } catch (e) {
+        // Fall back to static HTML so a missing browser degrades, not breaks.
+        payload = await fetchPayload(config.url, config);
+        mode = `static (render unavailable: ${String(e.message).slice(0, 90)})`;
+      }
+    } else {
+      payload = await fetchPayload(config.url, config);
+    }
     let extracted = runStrategy(payload, config);
     // Optional whitelist of currencies to keep
     if (config.only && Array.isArray(config.only)) {
@@ -55,8 +77,8 @@ export async function scrapeCompetitor(competitor, { persist = true } = {}) {
     }
     const status = extracted.length ? 'ok' : 'partial';
     const message = extracted.length
-      ? `Found ${extracted.length} rate(s): ${extracted.map((r) => r.currency).join(', ')}`
-      : 'Fetched page but extracted no rates (check strategy/selectors)';
+      ? `Found ${extracted.length} rate(s) [${mode}]: ${extracted.map((r) => r.currency).join(', ')}`
+      : `Fetched page [${mode}] but extracted no rates — run: npm run scrape:verify -- "${config.url}"`;
     if (runId) scrapeRuns.finish(runId, { status, rates_found: extracted.length, message });
     return { status, rates_found: extracted.length, message, rates: extracted };
   } catch (err) {

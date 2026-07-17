@@ -1,5 +1,5 @@
 // Crown Currency — Competitor Intel front-end (vanilla ES modules, no build step).
-import { lineChart, sparkline } from '/charts.js';
+import { lineChart, sparkline } from '/charts.js?v=1.3.0';
 
 // ---------------------------------------------------------------------------
 const api = {
@@ -276,9 +276,13 @@ async function renderTrendBody() {
   const showSelf = self && self.id !== data.competitor.id;
   const selfData = showSelf ? await api.get(`/trends?competitor_id=${self.id}&currency=${t.currency}&days=${t.days}`).catch(() => null) : null;
 
+  const tabName = state.trends.side === 'buy' ? 'Buy-back' : 'Sell';
   body.innerHTML = `
     <div class="insights-layout">
-      <div class="card chart-box"><div id="trendChart"></div></div>
+      <div class="card chart-box">
+        <h3 class="chart-title">${tabName} rate history · ${esc(data.competitor.name)} · ${data.currency}</h3>
+        <div id="trendChart"></div>
+      </div>
       <div class="card insights-panel">
         <h3>🧠 Smart insights <span class="muted" style="font-weight:400">· ${esc(data.competitor.name)} · ${data.currency}</span></h3>
         ${statGrid(data)}
