@@ -1,5 +1,5 @@
 // Crown Currency — Competitor Intel front-end (vanilla ES modules, no build step).
-import { lineChart, sparkline } from '/charts.js?v=1.3.0';
+import { lineChart, sparkline } from '/charts.js?v=1.4.0';
 
 // ---------------------------------------------------------------------------
 const api = {
@@ -52,6 +52,7 @@ function dateTime(sql) {
 }
 const pct = (v, dp = 2) => (v == null || !isFinite(v) ? '—' : `${v >= 0 ? '+' : ''}${v.toFixed(dp)}%`);
 const sideLabel = (s) => (s === 'buy' ? 'Buy-back' : 'Sell');
+const clip = (s, n) => (String(s ?? '').length > n ? `${String(s).slice(0, n - 1)}…` : String(s ?? ''));
 
 // ---------------------------------------------------------------------------
 const state = {
@@ -63,6 +64,10 @@ const state = {
   side: 'sell',
   trends: { competitorId: null, currency: null, days: 30, side: 'sell' },
 };
+
+// Results of the last scrape, shown on the dashboard until dismissed — a toast
+// alone leaves "0 rates found" looking like nothing happened.
+let lastScrape = null;
 
 async function loadCore() {
   const meta = await api.get('/meta');
@@ -141,6 +146,7 @@ views.dashboard = async function () {
         <button class="btn secondary small" id="scrapeAllBtn">⟳ Scrape all sites</button>
       </div>
     </div>
+    ${scrapePanel()}
     <div class="kpis">
       ${kpis.map((k) => `<div class="card kpi"><div class="k-val">${k.val}</div><div class="k-label">${esc(k.label)}</div>${k.sub ? `<div class="k-sub ${k.cls === 'warn' ? 'delta-down' : 'muted'}">${esc(k.sub)}</div>` : ''}</div>`).join('')}
     </div>
@@ -176,7 +182,36 @@ views.dashboard = async function () {
     navigate('dashboard');
   });
   $('#scrapeAllBtn').addEventListener('click', runScrapeAll);
+  $('#scrapeDismiss')?.addEventListener('click', () => {
+    lastScrape = null;
+    navigate('dashboard');
+  });
 };
+
+function scrapePanel() {
+  if (!lastScrape || !lastScrape.length) return '';
+  const total = lastScrape.reduce((a, r) => a + (r.rates_found || 0), 0);
+  const mark = (r) => (r.status === 'error' ? '✗' : r.status === 'ok' ? '✓' : '△');
+  const cls = (r) => (r.status === 'error' ? 'bad' : r.status === 'ok' ? 'good' : 'warn');
+  return `
+    <div class="card scrape-panel">
+      <div class="sp-head">
+        <h3>⟳ Scrape results <span class="muted" style="font-weight:400">· ${total} rate(s) from ${lastScrape.length} site(s)</span></h3>
+        <button class="btn secondary small" id="scrapeDismiss">Dismiss</button>
+      </div>
+      <div class="sp-rows">
+        ${lastScrape
+          .map(
+            (r) => `<div class="sp-row">
+              <span class="badge ${cls(r)}">${mark(r)} ${esc(r.competitor || '')}</span>
+              <span class="sp-found">${r.rates_found || 0} rate(s)</span>
+              <span class="sp-msg" title="${esc(r.message || '')}">${esc(clip(r.message, 140))}</span>
+            </div>`
+          )
+          .join('')}
+      </div>
+    </div>`;
+}
 
 function boardCard(c) {
   const selfRow = c.rows.find((r) => r.is_self);
@@ -214,13 +249,14 @@ async function runScrapeAll() {
   toast('Scraping competitor sites…');
   try {
     const results = await api.post('/scrape', {});
+    lastScrape = results;
     const found = results.reduce((a, r) => a + (r.rates_found || 0), 0);
     const errs = results.filter((r) => r.status === 'error').length;
     toast(`Scrape done: ${found} rate(s) from ${results.length} site(s)${errs ? `, ${errs} failed` : ''}`);
-    if (state.view === 'dashboard') navigate('dashboard');
   } catch (e) {
     toast(e.message, true);
   }
+  await navigate(state.view);
 }
 
 // ===========================================================================
@@ -521,10 +557,7 @@ views.competitors = async function () {
       <tbody id="runRows">${runs.length ? runs.map(runRow).join('') : '<tr><td colspan="4" class="muted" style="padding:16px">No scrape runs yet.</td></tr>'}</tbody></table></div>
   `;
   wireCompetitorForm();
-  $('#scrapeAll2').addEventListener('click', async () => {
-    await runScrapeAll();
-    navigate('competitors');
-  });
+  $('#scrapeAll2').addEventListener('click', runScrapeAll);
   document.querySelectorAll('[data-edit]').forEach((b) => b.addEventListener('click', () => startEdit(Number(b.dataset.edit))));
   document.querySelectorAll('[data-del]').forEach((b) => b.addEventListener('click', () => removeCompetitor(Number(b.dataset.del))));
   document.querySelectorAll('[data-scrape]').forEach((b) => b.addEventListener('click', () => scrapeOne(Number(b.dataset.scrape), b)));
@@ -608,11 +641,12 @@ async function scrapeOne(id, btn) {
   btn.textContent = '…';
   try {
     const [res] = await api.post('/scrape', { competitor_id: id });
-    toast(`${res.competitor}: ${res.status} — ${res.message}`, res.status === 'error');
+    lastScrape = [res];
+    toast(`${res.competitor}: ${res.status} — ${clip(res.message, 140)}`, res.status === 'error');
   } catch (e) {
     toast(e.message, true);
   } finally {
-    navigate('competitors');
+    await navigate('competitors');
   }
 }
 

@@ -57,11 +57,109 @@ function jsonStrategy(payload, config) {
   for (const it of items) {
     const code = String(getPath(it, map.code || 'code') || '').toUpperCase().slice(0, 3);
     if (!CURRENCY_CODES.includes(code)) continue;
-    const sell = normaliseRate(code, num(getPath(it, map.sell || 'sell'))).value;
+    const rawSell = num(getPath(it, map.sell || 'sell'));
+    const sell = normaliseRate(code, rawSell).value;
     const buy = map.buy ? normaliseRate(code, num(getPath(it, map.buy))).value : null;
-    if (sell != null || buy != null) out.push({ currency: code, sell_rate: sell, buy_rate: buy });
+    if (sell != null || buy != null) out.push({ currency: code, sell_rate: sell, buy_rate: buy, raw: rawSell });
   }
   return dedupe(out);
+}
+
+// --- auto-json strategy: find rate rows anywhere inside a JSON document -----
+// Used when a rendered page hides its rates in an XHR response: walk the parsed
+// JSON, find the array of objects that looks most like rate rows, and report both
+// the rows AND where they were found ({ items dotted path, map field names }) so
+// the engine can adopt a plain 'json' config from a single discovery run.
+const CODE_KEY_RE = /^(code|currency|currency_?code|ccy|iso|iso_?3|cur)$/i;
+const SELL_KEY_RE = /sell|sale|selling|we ?sell|rate/i;
+const BUY_KEY_RE = /buy|purchase|we ?buy/i;
+const WALK_MAX_DEPTH = 8;
+
+function isPlainObject(v) {
+  return !!v && typeof v === 'object' && !Array.isArray(v);
+}
+
+function asNumber(v) {
+  if (typeof v === 'number') return isFinite(v) ? v : null;
+  if (typeof v === 'string' && /^-?[\d,]+(?:\.\d+)?$/.test(v.trim())) {
+    const n = parseFloat(v.replace(/,/g, ''));
+    return isFinite(n) ? n : null;
+  }
+  return null;
+}
+
+function currencyOf(v) {
+  if (typeof v !== 'string') return null;
+  const c = v.trim().toUpperCase();
+  return /^[A-Z]{3}$/.test(c) && CURRENCY_CODES.includes(c) ? c : null;
+}
+
+function wantedSet(config) {
+  const list = config.only || config.currencies;
+  return Array.isArray(list) && list.length ? new Set(list.map((c) => String(c).toUpperCase())) : null;
+}
+
+// Decide which fields of an array of objects hold the code / sell / buy values.
+function pickFields(items) {
+  const sample = items.filter(isPlainObject).slice(0, 50);
+  if (!sample.length) return null;
+  const keys = [...new Set(sample.flatMap((r) => Object.keys(r)))];
+  let code = null;
+  let codeScore = 0;
+  for (const k of keys) {
+    const hits = sample.filter((r) => currencyOf(r[k])).length;
+    // A code-ish name only breaks ties — the values decide.
+    const score = hits * 2 + (CODE_KEY_RE.test(k) ? 1 : 0);
+    if (hits && score > codeScore) {
+      code = k;
+      codeScore = score;
+    }
+  }
+  if (!code) return null;
+  const numeric = keys.filter((k) => k !== code && sample.some((r) => asNumber(r[k]) != null));
+  const buy = numeric.find((k) => BUY_KEY_RE.test(k)) || null;
+  const sell =
+    numeric.find((k) => k !== buy && /sell|sale|selling/i.test(k)) ||
+    numeric.find((k) => k !== buy && SELL_KEY_RE.test(k)) ||
+    null;
+  if (!sell) return null;
+  return { code, sell, ...(buy ? { buy } : {}) };
+}
+
+function rowsFromItems(items, map, wanted) {
+  const out = [];
+  for (const it of items) {
+    if (!isPlainObject(it)) continue;
+    const code = currencyOf(it[map.code]);
+    if (!code || (wanted && !wanted.has(code))) continue;
+    const rawSell = asNumber(it[map.sell]);
+    const rawBuy = map.buy ? asNumber(it[map.buy]) : null;
+    const sell = rawSell == null ? null : normaliseRate(code, rawSell).value;
+    const buy = rawBuy == null ? null : normaliseRate(code, rawBuy).value;
+    if (sell != null || buy != null) out.push({ currency: code, sell_rate: sell, buy_rate: buy, raw: rawSell });
+  }
+  return dedupe(out);
+}
+
+export function autoJsonStrategy(payload, config = {}) {
+  const data = typeof payload === 'string' ? JSON.parse(payload) : payload;
+  const wanted = wantedSet(config);
+  let best = null;
+  const visit = (node, path, depth) => {
+    if (node == null || typeof node !== 'object' || depth > WALK_MAX_DEPTH) return;
+    if (Array.isArray(node)) {
+      const map = pickFields(node);
+      if (map) {
+        const rates = rowsFromItems(node, map, wanted);
+        if (rates.length && (!best || rates.length > best.rates.length)) best = { rates, items: path, map };
+      }
+      node.forEach((v, i) => visit(v, path ? `${path}.${i}` : String(i), depth + 1));
+      return;
+    }
+    for (const [k, v] of Object.entries(node)) visit(v, path ? `${path}.${k}` : k, depth + 1);
+  };
+  visit(data, '', 0);
+  return best || { rates: [], items: null, map: null };
 }
 
 // --- auto strategy: scan visible text for "CODE ... number" -----------------

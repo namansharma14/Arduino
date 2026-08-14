@@ -43,12 +43,24 @@ const STORES = [
     name: 'Carindale',
     location: 'Westfield Carindale, Brisbane QLD',
     competitors: [
+      // Verified live 14 Aug 2026: TMOZ's public rates API (no auth; sell side only —
+      // their buy-back rates are not in this feed). Fresh UUIDs are injected per call.
       { name: 'Travel Money Oz', location: 'Westfield Carindale (upstairs)', website: 'https://www.travelmoneyoz.com', bias: 0.004,
-        scrape_config: { strategy: 'auto', render: true, url: 'https://www.travelmoneyoz.com/rates', only: CARINDALE_ONLY } },
+        scrape_config: {
+          strategy: 'json',
+          url: 'https://eeermgmu4a.execute-api.ap-southeast-2.amazonaws.com/Prod/rates/cash/all/v1',
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: { RequestId: '<uuid>', CorrelationId: '<uuid>', SourceCurrency: 'AUD' },
+          items: 'Data.Rates',
+          map: { code: 'TargetCurrency', sell: 'ExchangeRate' },
+          only: CARINDALE_ONLY,
+          page_url: 'https://www.travelmoneyoz.com/rates',
+        } },
       { name: 'Travelex', location: 'Westfield Carindale, QLD', website: 'https://www.travelex.com.au', bias: -0.006,
         scrape_config: { strategy: 'auto', render: true, url: 'https://www.travelex.com.au/rates', only: CARINDALE_ONLY } },
       { name: 'Prosegur', location: 'Carindale, QLD', website: 'https://au.prosegurchange.com', bias: 0.001,
-        scrape_config: { strategy: 'auto', render: true, url: 'https://au.prosegurchange.com/exchange-rates', only: CARINDALE_ONLY } },
+        scrape_config: { strategy: 'auto', render: true, url: 'https://au.prosegurchange.com/exchange-rates', waitSelector: 'table tbody tr', only: CARINDALE_ONLY } },
       { name: 'Commbank Carindale', location: 'Westfield Carindale, QLD', bias: -0.009 },
     ],
     intel: [

@@ -56,8 +56,15 @@ export async function browserAvailable() {
   return !!(await findChrome());
 }
 
+// Sniffing keeps whole response bodies so the engine can extract rates from them,
+// so cap both a single body and the total kept per render.
+const SNIFF_MAX_BODY = 2_000_000;
+const SNIFF_MAX_TOTAL = 8_000_000;
+const SNIFF_MAX_HITS = 25;
+
 // Render a page and return its post-JS HTML. With sniff:true, also captures JSON
 // responses that look rate-related — the fastest route to a site's hidden API.
+// Each hit is { url, size, sample, body } — `sample` for display, `body` for extraction.
 export async function renderPage(
   url,
   { timeoutMs = 30000, waitSelector = null, extraWaitMs = 1500, sniff = false, userAgent = null } = {}
@@ -80,15 +87,18 @@ export async function renderPage(
     });
     const page = await ctx.newPage();
     const jsonHits = [];
+    let sniffedBytes = 0;
     if (sniff) {
       page.on('response', async (r) => {
         try {
+          if (jsonHits.length >= SNIFF_MAX_HITS || sniffedBytes >= SNIFF_MAX_TOTAL) return;
           const ct = r.headers()['content-type'] || '';
           if (!/json/i.test(ct)) return;
           const body = await r.text();
-          if (body.length < 20 || body.length > 2_000_000) return;
+          if (body.length < 20 || body.length > SNIFF_MAX_BODY) return;
           if (/\b(USD|EUR|GBP|JPY|NZD|THB|rate|currenc)/i.test(body)) {
-            jsonHits.push({ url: r.url(), size: body.length, sample: body.slice(0, 400) });
+            sniffedBytes += body.length;
+            jsonHits.push({ url: r.url(), size: body.length, sample: body.slice(0, 400), body });
           }
         } catch {
           /* response body may be gone — ignore */

@@ -85,7 +85,40 @@ sqlite3 competitor-intel/data/intel.db \
 
 ## Known site notes (update as you learn)
 
-- Travel Money Oz `/rates`, Travelex `/rates`, Prosegur `/exchange-rates`: big JS-rendered
-  sites; assume `render: true` minimum, expect a sniffable rates API; may bot-block plain curl.
-- Unreachable from the Claude cloud sandbox (egress allowlist) — verification must run in a
-  Codespace or on a user machine.
+### Travel Money Oz — SOLVED, verified live 2026-08-14
+Public unauthenticated rates API (AWS API Gateway; CORS-whitelisted to their site):
+`POST https://eeermgmu4a.execute-api.ap-southeast-2.amazonaws.com/Prod/rates/cash/all/v1`
+Body (required; UUIDs are echoed trace IDs — engine substitutes `"<uuid>"` placeholders):
+`{"RequestId":"<uuid>","CorrelationId":"<uuid>","SourceCurrency":"AUD"}`
+- Shape: `Data.Rates[]`, code=`TargetCurrency`, rate=`ExchangeRate`, foreign-units-per-AUD.
+- **Sell side only** — the site's buy-back rates are NOT in this feed (suspected separate
+  Elasticsearch index `fcl_currency_rates_country_prod`, unprobed). Do not map `buy`.
+- **Rows are per-country, not per-currency** (83 rows / 55 codes; EUR appears 21×) — the
+  engine's first-wins dedupe handles it; keep `only` filters tight anyway.
+- Timestamp: `Data.ConvertedDate` (cash) / `Data.ConversionDate` (card).
+  Card rates: same POST to `/Prod/rates/card/all/v1` (14 currencies).
+- No bot protection on the API (plain curl works). Flight Centre shared infra — sister
+  FCTG travel-money brands likely use the same gateway with different hosts.
+
+### Travelex AU — endpoint known, response shape UNVERIFIED
+Their SPA calls a global "salt" API (one backend for all country sites, param `site=/xx`):
+`GET https://api.travelex.net/salt/config/multi?key=Travelex&site=%2Fau&options=abhikzl`
+- Rates live at `rates.rates` = **object keyed by currency code** (not an array).
+  Per-currency value shape (field names, buy/sell, direction) is unknown — ONE GET from an
+  unblocked machine settles it; then write a `json` config (engine derives code from keys).
+- API docs exist: https://api.travelex.net/docs/api/index.html ("Travelex Ecommerce API (salt)").
+- A production scraper (alltheplaces) hits this API with vanilla HTTP — likely no bot wall.
+- Until verified, ship the page config (`auto` + `render:true`) and let the engine's
+  traffic-sniff auto-discovery find and adopt the real endpoint on first Codespace run.
+
+### Prosegur Change AU — no public trace; rely on auto-discovery
+No documented API anywhere public; not even in tracker-radar. Same platform runs all their
+country subdomains (`nz.`/`es.`/`de.`… `prosegurchange.com`) so an approach proven on any
+one transfers to AU. Config: `auto` + `render:true` + `waitSelector: 'table tbody tr'`;
+the sniffer will surface their XHR if one exists.
+
+### Claude cloud sandbox egress (this repo's sessions)
+The three sites' HTML pages AND `api.travelex.net` are egress-blocked, but
+`*.execute-api.ap-southeast-2.amazonaws.com` IS reachable — the TMOZ API verifies from
+inside the sandbox. Everything else needs a Codespace/user machine: hand the user
+`bash competitor-intel/scripts/verify-live.sh` and tune from the pasted output.
