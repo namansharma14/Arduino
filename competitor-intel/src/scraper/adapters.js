@@ -15,6 +15,26 @@ function num(text) {
   return m ? parseFloat(m[0]) : null;
 }
 
+function isPlainObject(v) {
+  return !!v && typeof v === 'object' && !Array.isArray(v);
+}
+
+// Strictly numeric values only — used to tell a rate field from free text.
+function asNumber(v) {
+  if (typeof v === 'number') return isFinite(v) ? v : null;
+  if (typeof v === 'string' && /^-?[\d,]+(?:\.\d+)?$/.test(v.trim())) {
+    const n = parseFloat(v.replace(/,/g, ''));
+    return isFinite(n) ? n : null;
+  }
+  return null;
+}
+
+function currencyOf(v) {
+  if (typeof v !== 'string') return null;
+  const c = v.trim().toUpperCase();
+  return /^[A-Z]{3}$/.test(c) && CURRENCY_CODES.includes(c) ? c : null;
+}
+
 // --- selector strategy: cheerio over an HTML table / list of rows -----------
 function selectorStrategy(html, config) {
   const $ = cheerio.load(html);
@@ -48,11 +68,14 @@ function selectorStrategy(html, config) {
 
 // --- json strategy: fetch a JSON API and map fields -------------------------
 // config.items = JSON pointer-ish path to an array; config.map = { code, sell, buy }
+// config.items may also resolve to an object keyed by currency code
+// ({ USD: 0.65 } or { USD: { sellRate: … } }) — Travelex publishes that shape.
 function jsonStrategy(payload, config) {
   const data = typeof payload === 'string' ? JSON.parse(payload) : payload;
   const items = config.items ? getPath(data, config.items) : data;
-  if (!Array.isArray(items)) return [];
   const map = config.map || {};
+  if (isPlainObject(items)) return keyedRows(items, map);
+  if (!Array.isArray(items)) return [];
   const out = [];
   for (const it of items) {
     const code = String(getPath(it, map.code || 'code') || '').toUpperCase().slice(0, 3);
@@ -60,6 +83,31 @@ function jsonStrategy(payload, config) {
     const rawSell = num(getPath(it, map.sell || 'sell'));
     const sell = normaliseRate(code, rawSell).value;
     const buy = map.buy ? normaliseRate(code, num(getPath(it, map.buy))).value : null;
+    if (sell != null || buy != null) out.push({ currency: code, sell_rate: sell, buy_rate: buy, raw: rawSell });
+  }
+  return dedupe(out);
+}
+
+// Rows from a { CODE: value } object. The code comes from the key, so map.code is
+// ignored here (KEYED_CODE marks a discovered config as this shape); a bare value
+// is the sell rate, an object is read through map.sell / map.buy.
+export const KEYED_CODE = '<key>';
+
+function keyedRows(obj, map = {}, wanted = null) {
+  const out = [];
+  for (const [key, val] of Object.entries(obj)) {
+    const code = currencyOf(key);
+    if (!code || (wanted && !wanted.has(code))) continue;
+    let rawSell = null;
+    let rawBuy = null;
+    if (isPlainObject(val)) {
+      rawSell = num(getPath(val, map.sell || 'sell'));
+      rawBuy = map.buy ? num(getPath(val, map.buy)) : null;
+    } else if (typeof val === 'number' || typeof val === 'string') {
+      rawSell = num(val);
+    }
+    const sell = rawSell == null ? null : normaliseRate(code, rawSell).value;
+    const buy = rawBuy == null ? null : normaliseRate(code, rawBuy).value;
     if (sell != null || buy != null) out.push({ currency: code, sell_rate: sell, buy_rate: buy, raw: rawSell });
   }
   return dedupe(out);
@@ -75,28 +123,24 @@ const SELL_KEY_RE = /sell|sale|selling|we ?sell|rate/i;
 const BUY_KEY_RE = /buy|purchase|we ?buy/i;
 const WALK_MAX_DEPTH = 8;
 
-function isPlainObject(v) {
-  return !!v && typeof v === 'object' && !Array.isArray(v);
-}
-
-function asNumber(v) {
-  if (typeof v === 'number') return isFinite(v) ? v : null;
-  if (typeof v === 'string' && /^-?[\d,]+(?:\.\d+)?$/.test(v.trim())) {
-    const n = parseFloat(v.replace(/,/g, ''));
-    return isFinite(n) ? n : null;
-  }
-  return null;
-}
-
-function currencyOf(v) {
-  if (typeof v !== 'string') return null;
-  const c = v.trim().toUpperCase();
-  return /^[A-Z]{3}$/.test(c) && CURRENCY_CODES.includes(c) ? c : null;
-}
+// An object needs this many currency-code keys before it reads as a rate table.
+const KEYED_MIN_CODES = 3;
 
 function wantedSet(config) {
   const list = config.only || config.currencies;
   return Array.isArray(list) && list.length ? new Set(list.map((c) => String(c).toUpperCase())) : null;
+}
+
+// Which numeric fields of a set of like-shaped objects hold sell / buy.
+function pickRateFields(sample, exclude = null) {
+  const keys = [...new Set(sample.flatMap((r) => Object.keys(r)))].filter((k) => k !== exclude);
+  const numeric = keys.filter((k) => sample.some((r) => asNumber(r[k]) != null));
+  const buy = numeric.find((k) => BUY_KEY_RE.test(k)) || null;
+  const sell =
+    numeric.find((k) => k !== buy && /sell|sale|selling/i.test(k)) ||
+    numeric.find((k) => k !== buy && SELL_KEY_RE.test(k)) ||
+    null;
+  return sell ? { sell, ...(buy ? { buy } : {}) } : null;
 }
 
 // Decide which fields of an array of objects hold the code / sell / buy values.
@@ -116,14 +160,20 @@ function pickFields(items) {
     }
   }
   if (!code) return null;
-  const numeric = keys.filter((k) => k !== code && sample.some((r) => asNumber(r[k]) != null));
-  const buy = numeric.find((k) => BUY_KEY_RE.test(k)) || null;
-  const sell =
-    numeric.find((k) => k !== buy && /sell|sale|selling/i.test(k)) ||
-    numeric.find((k) => k !== buy && SELL_KEY_RE.test(k)) ||
-    null;
-  if (!sell) return null;
-  return { code, sell, ...(buy ? { buy } : {}) };
+  const fields = pickRateFields(sample, code);
+  return fields ? { code, ...fields } : null;
+}
+
+// Is this object a { CODE: rate } table? Returns the value-side map, or null.
+function pickKeyedFields(obj) {
+  const values = Object.entries(obj)
+    .filter(([k]) => currencyOf(k))
+    .map(([, v]) => v);
+  if (values.length < KEYED_MIN_CODES) return null;
+  const objs = values.filter(isPlainObject);
+  if (objs.length >= KEYED_MIN_CODES) return pickRateFields(objs.slice(0, 50));
+  if (values.filter((v) => asNumber(v) != null).length >= KEYED_MIN_CODES) return {}; // bare numbers
+  return null;
 }
 
 function rowsFromItems(items, map, wanted) {
@@ -145,17 +195,19 @@ export function autoJsonStrategy(payload, config = {}) {
   const data = typeof payload === 'string' ? JSON.parse(payload) : payload;
   const wanted = wantedSet(config);
   let best = null;
+  const keep = (rates, items, map) => {
+    if (rates.length && (!best || rates.length > best.rates.length)) best = { rates, items, map };
+  };
   const visit = (node, path, depth) => {
     if (node == null || typeof node !== 'object' || depth > WALK_MAX_DEPTH) return;
     if (Array.isArray(node)) {
       const map = pickFields(node);
-      if (map) {
-        const rates = rowsFromItems(node, map, wanted);
-        if (rates.length && (!best || rates.length > best.rates.length)) best = { rates, items: path, map };
-      }
+      if (map) keep(rowsFromItems(node, map, wanted), path, map);
       node.forEach((v, i) => visit(v, path ? `${path}.${i}` : String(i), depth + 1));
       return;
     }
+    const keyed = pickKeyedFields(node);
+    if (keyed) keep(keyedRows(node, keyed, wanted), path, { code: KEYED_CODE, ...keyed });
     for (const [k, v] of Object.entries(node)) visit(v, path ? `${path}.${k}` : k, depth + 1);
   };
   visit(data, '', 0);

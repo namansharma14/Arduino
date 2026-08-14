@@ -154,6 +154,11 @@ export const competitors = {
   get(id) {
     return hydrateCompetitor(db.prepare('SELECT * FROM competitors WHERE id = ?').get(id));
   },
+  getByName(name) {
+    return hydrateCompetitor(
+      db.prepare('SELECT * FROM competitors WHERE name = ? COLLATE NOCASE ORDER BY id LIMIT 1').get(name)
+    );
+  },
   selfFor(store_id) {
     return hydrateCompetitor(
       db.prepare('SELECT * FROM competitors WHERE store_id = ? AND is_self = 1 LIMIT 1').get(store_id)

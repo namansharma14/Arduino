@@ -15,7 +15,8 @@
 // scrape_config ready to paste into the competitor's settings.
 
 import { runStrategy } from './adapters.js';
-import { DEFAULTS, CURRENCY_MAP, rateDecimals } from '../config.js';
+import { scrapeFetch } from './http.js';
+import { CURRENCY_MAP, rateDecimals } from '../config.js';
 
 const args = process.argv.slice(2);
 const flags = {};
@@ -72,17 +73,11 @@ console.log(`Strategy: ${baseConfig.strategy || 'auto'}${baseConfig.currencies ?
 let staticRates = [];
 let staticOk = false;
 if (!flags.noStatic) {
-  process.stdout.write('1) STATIC fetch (plain HTTP, no JS) … ');
+  const verb = String(baseConfig.method || 'GET').toUpperCase();
+  process.stdout.write(`1) STATIC fetch (plain HTTP ${verb}, no JS) … `);
   try {
-    const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), DEFAULTS.scrapeTimeoutMs);
-    const res = await fetch(url, {
-      signal: controller.signal,
-      redirect: 'follow',
-      headers: { 'User-Agent': DEFAULTS.userAgent, Accept: 'text/html,application/json,*/*', 'Accept-Language': 'en-AU,en;q=0.9' },
-    });
-    clearTimeout(timer);
-    const body = await res.text();
+    // Same request builder the engine uses, so method/headers/body/<uuid> match.
+    const { res, text: body } = await scrapeFetch(url, baseConfig);
     staticOk = res.ok;
     console.log(`HTTP ${res.status}, ${body.length} bytes`);
     if (res.ok) {
@@ -142,6 +137,9 @@ if (!staticOk && !renderedOk) {
     strategy: baseConfig.strategy === 'selector' || baseConfig.strategy === 'json' ? baseConfig.strategy : 'auto',
     ...(best.render ? { render: true } : {}),
     url,
+    ...(baseConfig.method ? { method: baseConfig.method } : {}),
+    ...(baseConfig.headers ? { headers: baseConfig.headers } : {}),
+    ...(baseConfig.body ? { body: baseConfig.body } : {}),
     ...(baseConfig.currencies ? { only: baseConfig.currencies } : {}),
     ...(baseConfig.rowSelector ? { rowSelector: baseConfig.rowSelector, fields: baseConfig.fields } : {}),
     ...(baseConfig.items ? { items: baseConfig.items, map: baseConfig.map } : {}),

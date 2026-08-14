@@ -19,6 +19,7 @@ const dbExisted = fs.existsSync(dbPath);
 
 const { default: db, stores, competitors, rates } = await import('../src/db.js');
 const { scrapeCompetitor } = await import('../src/scraper/engine.js');
+const { autoJsonStrategy, KEYED_CODE } = await import('../src/scraper/adapters.js');
 
 let passed = 0;
 let failed = 0;
@@ -63,18 +64,107 @@ const PAGE = `<!doctype html>
   </script>
 </body></html>`;
 
-const counts = { page: 0, api: 0 };
-const server = http.createServer((req, res) => {
+// Travel Money Oz shape: POST-only, demands a fresh request id, and repeats a
+// currency across per-country rows.
+const TMOZ = {
+  Data: {
+    ConvertedDate: '13 Aug, 2026',
+    Rates: [
+      { TargetCurrency: 'USD', ExchangeRate: 0.6489 },
+      { TargetCurrency: 'EUR', ExchangeRate: 0.5991 },
+      { TargetCurrency: 'EUR', ExchangeRate: 0.599 },
+      { TargetCurrency: 'GBP', ExchangeRate: 0.5203 },
+    ],
+  },
+};
+
+// Travelex shape: an object keyed by currency code.
+const KEYED = {
+  rates: {
+    rates: {
+      USD: { sellRate: 0.6489, buyRate: 0.6904 },
+      EUR: { sellRate: 0.5991, buyRate: 0.6378 },
+      XXX: { sellRate: 1 },
+    },
+  },
+};
+
+// Same canvas trick, but the rates arrive over a POST the engine has to replay.
+const PAGE_POST = `<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><title>Fixture POST</title></head>
+<body>
+  <h1>Fixture POST</h1>
+  <canvas id="board" width="520" height="220"></canvas>
+  <script>
+    const uid = () => 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, (c) => {
+      const r = (Math.random() * 16) | 0;
+      return (c === 'x' ? r : (r & 3) | 8).toString(16);
+    });
+    fetch('/api/tmoz-style', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ RequestId: uid(), CorrelationId: uid(), SourceCurrency: 'AUD' }),
+    })
+      .then((r) => r.json())
+      .then((d) => {
+        const ctx = document.getElementById('board').getContext('2d');
+        ctx.font = '16px sans-serif';
+        d.Data.Rates.forEach((q, i) => ctx.fillText(q.TargetCurrency + '   ' + q.ExchangeRate, 20, 30 + i * 28));
+      });
+  </script>
+</body></html>`;
+
+const counts = { page: 0, pagePost: 0, api: 0, tmoz: 0, keyed: 0 };
+const seenRequestIds = [];
+
+async function readBody(req) {
+  let raw = '';
+  for await (const chunk of req) raw += chunk;
+  return raw;
+}
+
+const server = http.createServer(async (req, res) => {
   const path = req.url.split('?')[0];
   if (path === '/api/v2/quotes') {
     counts.api++;
     res.writeHead(200, { 'content-type': 'application/json' });
     return res.end(JSON.stringify(QUOTES));
   }
+  if (path === '/api/tmoz-style') {
+    if (req.method !== 'POST') {
+      res.writeHead(405, { 'content-type': 'text/plain' });
+      return res.end('method not allowed');
+    }
+    let body = {};
+    try {
+      body = JSON.parse(await readBody(req));
+    } catch {
+      body = {};
+    }
+    const ids = [body.RequestId, body.CorrelationId];
+    if (!ids.every((v) => typeof v === 'string' && v.length && v !== '<uuid>')) {
+      res.writeHead(400, { 'content-type': 'application/json' });
+      return res.end(JSON.stringify({ error: 'RequestId and CorrelationId required' }));
+    }
+    counts.tmoz++;
+    seenRequestIds.push(body.RequestId);
+    res.writeHead(200, { 'content-type': 'application/json' });
+    return res.end(JSON.stringify(TMOZ));
+  }
+  if (path === '/api/keyed-style') {
+    counts.keyed++;
+    res.writeHead(200, { 'content-type': 'application/json' });
+    return res.end(JSON.stringify(KEYED));
+  }
   if (path === '/rates') {
     counts.page++;
     res.writeHead(200, { 'content-type': 'text/html; charset=utf-8' });
     return res.end(PAGE);
+  }
+  if (path === '/rates-post') {
+    counts.pagePost++;
+    res.writeHead(200, { 'content-type': 'text/html; charset=utf-8' });
+    return res.end(PAGE_POST);
   }
   res.writeHead(404, { 'content-type': 'text/plain' });
   res.end('not found');
@@ -213,6 +303,131 @@ try {
   });
   check('the healed endpoint is adopted again', () => {
     assert.equal(competitors.get(bogus.id).scrape_config.url, quotesUrl);
+  });
+
+  // 5. POST config with per-call <uuid> placeholders (Travel Money Oz shape)
+  const tmoz = competitors.create({
+    name: 'Fixture Money Oz',
+    store_id: store.id,
+    location: 'test fixture',
+    scrape_config: {
+      strategy: 'json',
+      url: `http://127.0.0.1:${port}/api/tmoz-style`,
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: { RequestId: '<uuid>', CorrelationId: '<uuid>', SourceCurrency: 'AUD' },
+      items: 'Data.Rates',
+      map: { code: 'TargetCurrency', sell: 'ExchangeRate' },
+      only: ['USD', 'EUR', 'GBP'],
+    },
+  });
+  createdCompetitors.push(tmoz.id);
+
+  const r5 = await scrapeCompetitor(tmoz, { persist: true });
+  console.log(`run 5 → ${r5.status}: ${r5.message}`);
+  check('POST config with <uuid> placeholders is accepted by the API', () => {
+    assert.equal(r5.status, 'ok');
+    assert.equal(r5.rates_found, 3);
+    assert.equal(counts.tmoz, 1);
+  });
+  check('duplicate currency rows dedupe first-wins, values exact', () => {
+    const by = Object.fromEntries(r5.rates.map((r) => [r.currency, r.sell_rate]));
+    assert.deepEqual(by, { USD: 0.6489, EUR: 0.5991, GBP: 0.5203 });
+  });
+
+  const r5b = await scrapeCompetitor(tmoz, { persist: false });
+  check('each call sends a fresh RequestId', () => {
+    assert.equal(r5b.rates_found, 3);
+    assert.equal(seenRequestIds.length, 2);
+    assert.notEqual(seenRequestIds[0], seenRequestIds[1]);
+    for (const id of seenRequestIds) assert.match(id, /^[0-9a-f-]{36}$/i);
+  });
+
+  // 6. rates published as an object keyed by currency code (Travelex shape)
+  const keyed = competitors.create({
+    name: 'Fixture Keyed FX',
+    store_id: store.id,
+    location: 'test fixture',
+    scrape_config: {
+      strategy: 'json',
+      url: `http://127.0.0.1:${port}/api/keyed-style`,
+      items: 'rates.rates',
+      map: { sell: 'sellRate', buy: 'buyRate' },
+    },
+  });
+  createdCompetitors.push(keyed.id);
+
+  const r6 = await scrapeCompetitor(keyed, { persist: true });
+  console.log(`run 6 → ${r6.status}: ${r6.message}`);
+  check('code-keyed object yields rates, unknown codes rejected', () => {
+    assert.equal(r6.status, 'ok');
+    assert.equal(r6.rates_found, 2);
+    const by = Object.fromEntries(r6.rates.map((r) => [r.currency, r]));
+    assert.deepEqual(Object.keys(by).sort(), ['EUR', 'USD']);
+    assert.equal(by.USD.sell_rate, 0.6489);
+    assert.equal(by.USD.buy_rate, 0.6904);
+    assert.equal(by.EUR.buy_rate, 0.6378);
+  });
+  check('keyed shape is discoverable too (items path + keyed map)', () => {
+    const doc = { rates: { rates: { USD: 0.6489, EUR: 0.5991, GBP: 0.5203, XXX: 1 } } };
+    const found = autoJsonStrategy(JSON.stringify(doc), {});
+    assert.equal(found.items, 'rates.rates');
+    assert.equal(found.map.code, KEYED_CODE);
+    assert.deepEqual(
+      found.rates.map((r) => [r.currency, r.sell_rate]),
+      [['USD', 0.6489], ['EUR', 0.5991], ['GBP', 0.5203]]
+    );
+  });
+
+  // 7. discovery of a POST endpoint — the adopted config must replay the verb,
+  //    the body, and a fresh request id each time
+  const posted = competitors.create({
+    name: 'Canvas FX (POST)',
+    store_id: store.id,
+    location: 'test fixture',
+    scrape_config: {
+      strategy: 'auto',
+      render: true,
+      url: `http://127.0.0.1:${port}/rates-post`,
+      only: ['USD', 'EUR', 'GBP'],
+    },
+  });
+  createdCompetitors.push(posted.id);
+
+  const r7 = await scrapeCompetitor(posted, { persist: true });
+  console.log(`run 7 → ${r7.status}: ${r7.message}`);
+  check('a POST-only API is discovered from page traffic', () => {
+    assert.equal(r7.status, 'ok');
+    assert.equal(r7.rates_found, 3);
+    assert.match(r7.message, /auto-discovered API/);
+  });
+  check('the adopted config replays the POST with a <uuid> placeholder', () => {
+    const c = competitors.get(posted.id).scrape_config;
+    assert.equal(c.strategy, 'json');
+    assert.equal(c.method, 'POST');
+    assert.equal(c.items, 'Data.Rates');
+    assert.deepEqual(c.map, { code: 'TargetCurrency', sell: 'ExchangeRate' });
+    assert.deepEqual(c.body, { RequestId: '<uuid>', CorrelationId: '<uuid>', SourceCurrency: 'AUD' });
+  });
+
+  const idsBefore = seenRequestIds.length;
+  const pagePostsBefore = counts.pagePost;
+  const r8 = await scrapeCompetitor(competitors.get(posted.id), { persist: false });
+  console.log(`run 8 → ${r8.status}: ${r8.message}`);
+  check('the adopted POST config runs statically with a fresh id', () => {
+    assert.equal(r8.rates_found, 3);
+    assert.equal(counts.pagePost, pagePostsBefore, 'the page was rendered again');
+    assert.equal(seenRequestIds.length, idsBefore + 1);
+    assert.equal(new Set(seenRequestIds).size, seenRequestIds.length, 'a request id was reused');
+  });
+
+  // 8. competitors.getByName — the lookup `npm run scrape -- "Name"` depends on
+  check('getByName resolves a competitor case-insensitively', () => {
+    const hit = competitors.getByName('fIxTuRe MoNeY oZ');
+    assert.ok(hit, 'no competitor returned');
+    assert.equal(hit.id, tmoz.id);
+    assert.equal(hit.scrape_config.method, 'POST');
+    assert.equal(competitors.getByName('no such competitor'), undefined);
   });
 } catch (e) {
   failed++;

@@ -10,30 +10,11 @@
 import { competitors as competitorsRepo, rates as ratesRepo, scrapeRuns } from '../db.js';
 import { DEFAULTS, CURRENCY_MAP } from '../config.js';
 import { runStrategy, autoJsonStrategy } from './adapters.js';
+import { fetchPayload, templatiseUuids } from './http.js';
 
 const MAX_SNIFF_CANDIDATES = 5;
 // Reject a rate more than ~5x away from the currency's typical units-per-AUD.
 const SANITY_LOG10 = 0.7;
-
-async function fetchPayload(url, config) {
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), DEFAULTS.scrapeTimeoutMs);
-  try {
-    const res = await fetch(url, {
-      signal: controller.signal,
-      redirect: 'follow',
-      headers: {
-        'User-Agent': DEFAULTS.userAgent,
-        Accept: config.strategy === 'json' ? 'application/json,*/*' : 'text/html,application/xhtml+xml,*/*',
-        'Accept-Language': 'en-AU,en;q=0.9',
-      },
-    });
-    if (!res.ok) throw new Error(`HTTP ${res.status} ${res.statusText}`);
-    return config.strategy === 'json' ? await res.json() : await res.text();
-  } finally {
-    clearTimeout(timer);
-  }
-}
 
 async function renderAndSniff(url, config) {
   const { renderPage } = await import('./browser.js');
@@ -101,11 +82,28 @@ function discoverFromTraffic(jsonHits, config) {
   return null;
 }
 
+// Keep a JSON payload as an object so the stored config stays readable (and picks
+// up the Content-Type default); anything else goes back verbatim.
+function replayBody(hit) {
+  if (!hit.postData) return {};
+  try {
+    const parsed = JSON.parse(hit.postData);
+    if (parsed && typeof parsed === 'object') return { body: templatiseUuids(parsed) };
+  } catch {
+    /* not JSON */
+  }
+  return { body: hit.postData, ...(hit.contentType ? { headers: { 'Content-Type': hit.contentType } } : {}) };
+}
+
 function adoptConfig(competitor, config, discovery) {
   const carry = config.only || config.currencies || null;
+  const method = String(discovery.hit.method || 'GET').toUpperCase();
+  // Replay the call the way the page made it, or the adopted config 405s on run 2.
+  const replay = method === 'GET' ? {} : { method, ...replayBody(discovery.hit) };
   const adopted = {
     strategy: 'json',
     url: discovery.hit.url,
+    ...replay,
     items: discovery.items,
     map: discovery.map,
     ...(carry ? { only: carry.map((c) => String(c).toUpperCase()) } : {}),

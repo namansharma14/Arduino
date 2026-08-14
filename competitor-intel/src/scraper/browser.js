@@ -64,7 +64,8 @@ const SNIFF_MAX_HITS = 25;
 
 // Render a page and return its post-JS HTML. With sniff:true, also captures JSON
 // responses that look rate-related — the fastest route to a site's hidden API.
-// Each hit is { url, size, sample, body } — `sample` for display, `body` for extraction.
+// Each hit is { url, size, sample, body, method, postData }: `sample` for display,
+// `body` for extraction, `method`/`postData` to replay the call without the page.
 export async function renderPage(
   url,
   { timeoutMs = 30000, waitSelector = null, extraWaitMs = 1500, sniff = false, userAgent = null } = {}
@@ -98,7 +99,17 @@ export async function renderPage(
           if (body.length < 20 || body.length > SNIFF_MAX_BODY) return;
           if (/\b(USD|EUR|GBP|JPY|NZD|THB|rate|currenc)/i.test(body)) {
             sniffedBytes += body.length;
-            jsonHits.push({ url: r.url(), size: body.length, sample: body.slice(0, 400), body });
+            const req = r.request();
+            jsonHits.push({
+              url: r.url(),
+              size: body.length,
+              sample: body.slice(0, 400),
+              body,
+              // How the page asked for it — a POST API adopted as a GET would 405.
+              method: req.method(),
+              postData: req.postData() || null,
+              contentType: req.headers()['content-type'] || null,
+            });
           }
         } catch {
           /* response body may be gone — ignore */
